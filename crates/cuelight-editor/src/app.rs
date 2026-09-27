@@ -444,6 +444,10 @@ impl App {
                 _ => None,
             },
         ));
+        // A browser does not tell the window about drops: the page listens.
+        #[cfg(target_arch = "wasm32")]
+        subscriptions
+            .push(Subscription::run(dialog::drops).map(|picked| Message::Picked(Some(picked))));
         Subscription::batch(subscriptions)
     }
 
@@ -499,7 +503,7 @@ impl App {
         let body: Element<'_, Message> = match &self.session {
             None => center(
                 text(if cfg!(target_arch = "wasm32") {
-                    "Open a packed show (.cuelight)."
+                    "Open a packed show (.cuelight), or drop one on this page."
                 } else {
                     "Open a show folder, a packed show (.cuelight) or a show.json, or drop one on this window."
                 })

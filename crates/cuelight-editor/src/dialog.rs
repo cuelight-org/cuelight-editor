@@ -75,3 +75,49 @@ pub async fn fetch_show_from_query() -> Option<Picked> {
     let name = url.rsplit('/').next().unwrap_or("show.cuelight").to_owned();
     Some(Picked::File { name, bytes })
 }
+
+/// In a browser, the files dropped on the page, as they come. The page
+/// itself has to accept drops (a browser opens a dropped file otherwise),
+/// so the listeners go on the document and stay for the page's life.
+#[cfg(target_arch = "wasm32")]
+pub fn drops() -> impl iced::futures::Stream<Item = Picked> {
+    use iced::futures::channel::mpsc;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen_futures::JsFuture;
+
+    let (sender, receiver) = mpsc::unbounded();
+    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+        let allow = Closure::<dyn Fn(web_sys::Event)>::new(|event: web_sys::Event| {
+            event.prevent_default();
+        });
+        let _ =
+            document.add_event_listener_with_callback("dragover", allow.as_ref().unchecked_ref());
+        allow.forget();
+
+        let dropped =
+            Closure::<dyn Fn(web_sys::DragEvent)>::new(move |event: web_sys::DragEvent| {
+                event.prevent_default();
+                let Some(file) = event
+                    .data_transfer()
+                    .and_then(|transfer| transfer.files())
+                    .and_then(|files| files.get(0))
+                else {
+                    return;
+                };
+                let sender = sender.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let name = file.name();
+                    let Ok(buffer) = JsFuture::from(file.array_buffer()).await else {
+                        log::warn!("could not read the dropped file {name}");
+                        return;
+                    };
+                    let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+                    let _ = sender.unbounded_send(Picked::File { name, bytes });
+                });
+            });
+        let _ = document.add_event_listener_with_callback("drop", dropped.as_ref().unchecked_ref());
+        dropped.forget();
+    }
+    receiver
+}

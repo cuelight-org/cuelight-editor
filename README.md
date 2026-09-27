@@ -27,6 +27,8 @@ buttons, its variables as fields and toggles, its own values as
 readouts, and what happened lately. Keys the show names, and presses on
 its pressable layers, go to the show first (Ctrl reaches the editor's
 own shortcuts); what you fire is recorded, so scrubbing back replays it.
+The Driver switch in the bar turns the show's own driver off, so nothing
+happens until you make it.
 
 ### In the browser
 

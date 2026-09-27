@@ -30,6 +30,8 @@ pub struct Session {
     pub revision: u64,
     /// Inputs fired by hand are recorded, so a scrub replays them.
     pub recording: bool,
+    /// Whether the driver plays. Off, the show waits for the hand.
+    pub driving: bool,
     /// What happened lately, newest last: inputs given and events the
     /// show fired, with the show time of each.
     pub happened: VecDeque<Happened>,
@@ -67,8 +69,25 @@ impl Session {
             paused: false,
             revision: 0,
             recording: true,
+            driving: true,
             happened: VecDeque::new(),
         }
+    }
+
+    /// Whether the show came with a driver at all.
+    pub fn has_driver(&self) -> bool {
+        self.driver.is_some()
+    }
+
+    /// Turn the driver on or off. Off, a seek replays only what was
+    /// fired by hand; on again, the driver plays from the show's time on.
+    pub fn set_driving(&mut self, on: bool, now: Instant) {
+        if self.driving == on {
+            return;
+        }
+        self.driving = on;
+        let time = self.time;
+        self.seek(time, now);
     }
 
     /// Fire a trigger as a host would, now.
@@ -173,7 +192,9 @@ impl Session {
             return;
         }
         let mut engine = self.engine.lock().expect("the engine is not poisoned");
-        if let Some(player) = &mut self.player {
+        if self.driving
+            && let Some(player) = &mut self.player
+        {
             player.advance(&mut engine, dt);
         }
         engine.advance_to(time);
@@ -199,7 +220,8 @@ impl Session {
     pub fn seek(&mut self, to: f64, now: Instant) {
         let to = to.max(0.0);
         let mut engine = self.engine.lock().expect("the engine is not poisoned");
-        self.player = cuelight_loader::seek(&mut engine, self.driver.clone(), &self.live, to, 60.0);
+        let driver = self.driving.then(|| self.driver.clone()).flatten();
+        self.player = cuelight_loader::seek(&mut engine, driver, &self.live, to, 60.0);
         drop(engine);
         self.time = to;
         self.anchor = now.checked_sub(Duration::from_secs_f64(to));
@@ -220,7 +242,7 @@ impl Session {
 
     /// How long one pass of the driver takes: the sum of its waits.
     pub fn pass_length(&self) -> Option<f64> {
-        let driver = self.driver.as_ref()?;
+        let driver = self.driver.as_ref().filter(|_| self.driving)?;
         let waits = driver
             .steps
             .iter()

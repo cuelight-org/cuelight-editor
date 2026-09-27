@@ -65,6 +65,8 @@ pub enum Message {
     /// A variable set from its field (parsed) or its toggle.
     Set(String, String),
     Record(bool),
+    /// The driver switched on or off.
+    Drive(bool),
 }
 
 impl App {
@@ -244,6 +246,13 @@ impl App {
                 }
                 Task::none()
             }
+            Message::Drive(on) => {
+                if let Some(session) = &mut self.session {
+                    session.set_driving(on, Instant::now());
+                    self.hush();
+                }
+                Task::none()
+            }
             Message::TogglePause => {
                 if let Some(session) = &mut self.session {
                     session.toggle_pause(Instant::now());
@@ -392,6 +401,16 @@ impl App {
                         .width(Fill),
                 )
                 .push(text(format!("{:7.2} / {end:.0} s", session.time)).size(14))
+                .push(space::horizontal().width(16));
+            if session.has_driver() {
+                bar = bar.push(
+                    toggler(session.driving)
+                        .label("Driver")
+                        .on_toggle(Message::Drive)
+                        .size(16),
+                );
+            }
+            bar = bar
                 .push(space::horizontal().width(16))
                 .push(text(&self.source).size(14));
         }
@@ -671,6 +690,29 @@ mod tests {
         assert!(
             ui.find("go  [Space]").is_ok(),
             "the trigger's button names its key"
+        );
+    }
+
+    #[test]
+    fn without_the_driver_the_show_waits_for_the_hand() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        let _ = app.update(Message::Drive(false));
+        // The driver sets `lit` at 0.5 s; without it nothing does.
+        let _ = app.update(Message::Seek(1.0));
+        assert_eq!(
+            app.session.as_ref().unwrap().value("lit"),
+            Some(cuelight::Value::Bool(false))
+        );
+        let _ = app.update(Message::Drive(true));
+        let _ = app.update(Message::Seek(1.0));
+        assert_eq!(
+            app.session.as_ref().unwrap().value("lit"),
+            Some(cuelight::Value::Bool(true))
         );
     }
 }

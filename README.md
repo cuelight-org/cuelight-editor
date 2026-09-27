@@ -4,9 +4,10 @@ An editor for [cuelight](https://github.com/francisdb/cuelight) shows:
 one Rust program, built with [iced](https://github.com/iced-rs/iced),
 that runs on the desktop and in the browser.
 
-It is at its first milestone: it opens a show and says what it found.
-The plan it follows is the editor spec (goals, what it looks like, how
-timelines and transitions are shown, and the work items in order).
+It is at its first milestone: it opens a show, plays it on a stage
+drawn by the engine's own renderer, and says what it found. The plan it
+follows is the editor spec (goals, what it looks like, how timelines and
+transitions are shown, and the work items in order).
 
 ## Running
 
@@ -16,7 +17,8 @@ cargo run --release -- ../cuelight-examples/deck   # or open one straight away
 ```
 
 Open a show folder, a packed show (`.cuelight`) or a loose `show.json`
-from the bar, or drop one on the window.
+from the bar, or drop one on the window. The show plays with its
+`test-driver.json`; Space pauses and plays, R restarts.
 
 ### In the browser
 
@@ -40,12 +42,19 @@ player does.
   newer format than the editor knows is refused with the version it
   wants.
 - `src/dialog.rs` is the open dialog, native and web (`rfd`).
-- `src/app.rs` is the window: the open bar, the summary, the status line,
-  and file drops on the desktop.
+- `src/session.rs` plays a show: the engine, its driver and an anchored
+  clock, as the players keep time.
+- `src/stage.rs` draws it: an iced shader widget in which the engine's
+  presenter and vello render the frame into a texture, blitted into the
+  widget's rectangle. It is the players' own render path, so the stage
+  looks like them.
+- `src/app.rs` is the window: the open bar with the transport, the stage
+  beside the summary, the status line, and file drops on the desktop.
 
 Tests: `cargo test` opens a small show from `tests/fixtures/mini` as a
-folder, as a pack and as a loose document, and checks the window through
-`iced_test`.
+folder, as a pack and as a loose document, and checks the window and the
+clock through `iced_test`. `cargo run --release --example seek_timing --
+<show>` measures what a seek and a reload cost.
 
 ### Dependencies and versions
 

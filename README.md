@@ -22,7 +22,8 @@ from the bar, or drop one on the window. The show plays with its
 
 ### In the browser
 
-The same program compiled to `wasm32`, built with
+The same program compiled to `wasm32` is published from `main` at
+https://francisdb.github.io/cuelight-editor/, and built locally with
 [trunk](https://trunkrs.dev):
 
 ```sh

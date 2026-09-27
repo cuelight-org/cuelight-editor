@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use cuelight::Engine;
-use cuelight_loader::{Driver, DriverPlayer};
+use cuelight_loader::{Driver, DriverPlayer, Live, Step};
 use std::time::Duration;
 
 pub use web_time::Instant;
@@ -18,6 +18,9 @@ pub struct Session {
     pub engine: Arc<Mutex<Engine>>,
     driver: Option<Driver>,
     player: Option<DriverPlayer>,
+    /// What the host fired live, replayed by a seek (nothing yet: keys
+    /// and presses come with the inputs panel).
+    live: Live,
     anchor: Option<Instant>,
     /// The show's time, in seconds.
     pub time: f64,
@@ -32,6 +35,7 @@ impl Session {
             engine: Arc::new(Mutex::new(engine)),
             player: driver.clone().map(DriverPlayer::new),
             driver,
+            live: Live::default(),
             anchor: None,
             time: 0.0,
             paused: false,
@@ -68,6 +72,38 @@ impl Session {
         } else {
             self.paused = true;
         }
+    }
+
+    /// Put the show at `to` seconds, by replaying its inputs from the
+    /// start. Playing goes on from there; paused stays paused there.
+    pub fn seek(&mut self, to: f64, now: Instant) {
+        let to = to.max(0.0);
+        let mut engine = self.engine.lock().expect("the engine is not poisoned");
+        self.player = cuelight_loader::seek(&mut engine, self.driver.clone(), &self.live, to, 60.0);
+        drop(engine);
+        self.time = to;
+        self.anchor = now.checked_sub(Duration::from_secs_f64(to));
+        self.revision += 1;
+    }
+
+    /// Move by `dt` seconds, forwards or back, and stay paused there.
+    pub fn step(&mut self, dt: f64, now: Instant) {
+        self.paused = true;
+        self.seek(self.time + dt, now);
+    }
+
+    /// How long one pass of the driver takes: the sum of its waits.
+    pub fn pass_length(&self) -> Option<f64> {
+        let driver = self.driver.as_ref()?;
+        let waits = driver
+            .steps
+            .iter()
+            .map(|step| match step {
+                Step::Wait { wait } => *wait,
+                _ => 0.0,
+            })
+            .sum::<f64>();
+        (waits > 0.0).then_some(waits)
     }
 
     pub fn restart(&mut self, now: Instant) {

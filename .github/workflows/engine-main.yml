@@ -24,8 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: System libraries iced and rfd build against
+      - name: System libraries iced, rfd and the sound device build against
         run: |
           sudo apt-get -qq update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libasound2-dev
       - run: cargo test --workspace $CARGO_PATCH

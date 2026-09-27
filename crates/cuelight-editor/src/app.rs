@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use cuelight_editor_core::inputs::{self, Inputs};
+use cuelight_editor_core::inputs::{self, Inputs, Place};
 use cuelight_editor_core::session::Instant;
 use iced::keyboard;
 use iced::widget::{
@@ -461,26 +461,31 @@ impl App {
                 .on_toggle(Message::Record)
                 .size(16),
         );
-        if !self.inputs.triggers.is_empty() {
-            panel = panel.push(text("TRIGGERS").size(12));
-            for trigger in &self.inputs.triggers {
-                let mut label = trigger.clone();
-                let keys: Vec<&str> = self
-                    .inputs
-                    .keys
-                    .iter()
-                    .filter(|(_, t)| *t == trigger)
-                    .map(|(k, _)| if k == " " { "Space" } else { k.as_str() })
-                    .collect();
-                if !keys.is_empty() {
-                    label = format!("{trigger}  [{}]", keys.join(", "));
+        // Triggers by where they are heard: the ones that open a scene,
+        // the ones heard anywhere, then each scene's own, dimmed while
+        // another scene is up.
+        let active = session.active_scene();
+        let mut opens = Vec::new();
+        let mut anywhere = Vec::new();
+        let mut by_scene: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for trigger in &self.inputs.triggers {
+            match self.inputs.places.get(trigger) {
+                Some(Place::Opens(_)) => opens.push(trigger.as_str()),
+                Some(Place::Scene(scene)) => {
+                    by_scene.entry(scene.as_str()).or_default().push(trigger)
                 }
-                panel = panel.push(
-                    button(text(label).size(14))
-                        .on_press(Message::Fire(trigger.clone()))
-                        .width(Fill),
-                );
+                _ => anywhere.push(trigger.as_str()),
             }
+        }
+        if !opens.is_empty() {
+            panel = self.triggers(panel, "OPENS A SCENE".to_owned(), &opens, true);
+        }
+        if !anywhere.is_empty() {
+            panel = self.triggers(panel, "ANYWHERE".to_owned(), &anywhere, true);
+        }
+        for (scene, triggers) in &by_scene {
+            let live = active.as_deref() == Some(*scene);
+            panel = self.triggers(panel, format!("IN {scene}"), triggers, live);
         }
         if !self.inputs.variables.is_empty() {
             panel = panel.push(text("VARIABLES").size(12));
@@ -538,6 +543,42 @@ fn key_name(key: &keyboard::Key) -> String {
         keyboard::Key::Named(keyboard::key::Named::Space) => " ".to_owned(),
         keyboard::Key::Named(named) => format!("{named:?}"),
         keyboard::Key::Unidentified => String::new(),
+    }
+}
+
+impl App {
+    /// One heading of trigger buttons. A button names the keys that fire
+    /// its trigger; a section whose scene is not up is drawn dimmed.
+    fn triggers<'a>(
+        &'a self,
+        panel: Column<'a, Message>,
+        heading: String,
+        triggers: &[&'a str],
+        live: bool,
+    ) -> Column<'a, Message> {
+        let mut panel = panel.push(text(heading).size(12));
+        for trigger in triggers {
+            let keys: Vec<&str> = self
+                .inputs
+                .keys
+                .iter()
+                .filter(|(_, t)| t == trigger)
+                .map(|(k, _)| if k == " " { "Space" } else { k.as_str() })
+                .collect();
+            let label = if keys.is_empty() {
+                (*trigger).to_owned()
+            } else {
+                format!("{trigger}  [{}]", keys.join(", "))
+            };
+            let mut b = button(text(label).size(14))
+                .on_press(Message::Fire((*trigger).to_owned()))
+                .width(Fill);
+            if !live {
+                b = b.style(button::secondary);
+            }
+            panel = panel.push(b);
+        }
+        panel
     }
 }
 
@@ -690,6 +731,10 @@ mod tests {
         assert!(
             ui.find("go  [Space]").is_ok(),
             "the trigger's button names its key"
+        );
+        assert!(
+            ui.find("ANYWHERE").is_ok(),
+            "a trigger only the show's own layers hear is listed as heard anywhere"
         );
     }
 

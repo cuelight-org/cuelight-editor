@@ -152,6 +152,15 @@ impl Session {
         }
     }
 
+    /// The scene that is active now.
+    pub fn active_scene(&self) -> Option<String> {
+        self.engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .active_scene()
+            .map(str::to_owned)
+    }
+
     /// The current value of a variable or a show value, as the engine
     /// reads it.
     pub fn value(&self, name: &str) -> Option<Value> {

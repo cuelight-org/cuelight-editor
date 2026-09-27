@@ -98,4 +98,6 @@ shows up within days.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The bundled UI fonts, Atkinson Hyperlegible
+and DM Mono, are under the SIL Open Font License 1.1
+(`crates/cuelight-editor/fonts/`).

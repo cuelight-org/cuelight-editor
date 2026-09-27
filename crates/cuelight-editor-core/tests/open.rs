@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use cuelight_editor::opened::Opened;
+use cuelight_editor_core::opened::Opened;
 
 fn fixture() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mini"))

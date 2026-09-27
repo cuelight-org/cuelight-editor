@@ -1,0 +1,20 @@
+[package]
+name = "cuelight-editor-core"
+description = "What the cuelight editor knows without a window: opening a show, playing it, and later its document and edits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cuelight.workspace = true
+cuelight-loader.workspace = true
+log.workspace = true
+serde_json.workspace = true
+# The clock's instant, which a browser has no std one of.
+web-time = "1"
+
+[dev-dependencies]
+tempfile = "3"

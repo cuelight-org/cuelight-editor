@@ -1,0 +1,31 @@
+# The editor pins the engine to a commit. This builds it against the
+# engine's main branch instead, weekly and on demand, so a change there
+# that breaks the editor shows up within days rather than at the next
+# bump.
+name: against engine main
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Point both engine crates at main; the pinned revs in Cargo.toml stay.
+  CARGO_PATCH: >-
+    --config patch."https://github.com/francisdb/cuelight".cuelight.git="https://github.com/francisdb/cuelight"
+    --config patch."https://github.com/francisdb/cuelight".cuelight.branch="main"
+    --config patch."https://github.com/francisdb/cuelight".cuelight-loader.git="https://github.com/francisdb/cuelight"
+    --config patch."https://github.com/francisdb/cuelight".cuelight-loader.branch="main"
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: System libraries iced and rfd build against
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - run: cargo test $CARGO_PATCH

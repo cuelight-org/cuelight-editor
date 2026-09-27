@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "name": "mini",
+  "size": [64, 32],
+  "background": "#101018",
+  "variables": { "lit": false },
+  "input": { "keys": { " ": "go" } },
+  "layers": [
+    { "name": "floor", "type": "shape", "shape": { "rect": [4, 26, 56, 2] }, "fill": "#335533" },
+    {
+      "name": "group", "type": "group", "x": 32, "y": 14,
+      "children": [
+        { "name": "dot", "type": "image", "image": "dot", "anchor": "center", "press": { "trigger": "go" },
+          "timelines": [
+            { "name": "hop", "trigger": "go", "tracks": [
+              { "property": "y", "keys": [{ "t": 0, "v": 0 }, { "t": 0.2, "v": -6, "ease": "quad_out" }, { "t": 0.4, "v": 0, "ease": "quad_in" }] }
+            ]}
+          ],
+          "bindings": [{ "property": "opacity", "variable": "lit", "map": { "true": 1 }, "default": 0.4 }]
+        }
+      ]
+    }
+  ]
+}

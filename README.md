@@ -32,8 +32,9 @@ trunk build                 # writes the page to dist/
 ```
 
 The browser opens a packed show or a `show.json` through its file
-picker; it cannot pick folders. Drawing needs WebGPU, as the cuelight web
-player does.
+picker, or straight from the page's URL: `?show=deck.cuelight` fetches
+and opens that file. It cannot pick folders. Drawing needs WebGPU, as
+the cuelight web player does.
 
 ## How it is built
 

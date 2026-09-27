@@ -2,5 +2,6 @@
 //! any of its forms, and playing it on a clock. No iced, no GPU, so it
 //! compiles in seconds and its tests run anywhere, the browser included.
 
+pub mod inputs;
 pub mod opened;
 pub mod session;

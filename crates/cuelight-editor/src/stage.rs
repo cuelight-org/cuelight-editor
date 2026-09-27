@@ -13,24 +13,83 @@ use std::sync::{Arc, Mutex};
 
 use cuelight::Engine;
 use cuelight::render::Presenter;
-use iced::widget::shader::{self, Viewport};
-use iced::{Rectangle, mouse};
+use iced::widget::shader::{self, Action, Viewport};
+use iced::{Event, Rectangle, mouse};
 
-/// The widget's program: what to draw is whatever the engine shows now.
-pub struct Stage {
+/// The widget's program: what to draw is whatever the engine shows now,
+/// and a click on it is a press at a canvas point.
+pub struct Stage<Message> {
     pub engine: Arc<Mutex<Engine>>,
     /// Changes when the show moved, so iced prepares a new frame.
     pub revision: u64,
+    /// The message a press at a canvas point becomes.
+    pub on_press: fn([f64; 2]) -> Message,
 }
 
-impl<Message> shader::Program<Message> for Stage {
+impl<Message> shader::Program<Message> for Stage<Message> {
     type State = ();
     type Primitive = Frame;
+
+    fn update(
+        &self,
+        _state: &mut (),
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<Action<Message>> {
+        let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event else {
+            return None;
+        };
+        let at = cursor.position_in(bounds)?;
+        let engine = self.engine.lock().ok()?;
+        let show = engine.show()?;
+        // The stage fits the show into its box the way a player fits it
+        // into a window, so the same arithmetic maps a point back.
+        let target = [bounds.width.round() as u32, bounds.height.round() as u32];
+        let point = cuelight::render::canvas_at(
+            show.size,
+            target,
+            engine.scaling(),
+            [f64::from(at.x), f64::from(at.y)],
+        )?;
+        Some(Action::publish((self.on_press)(point)).and_capture())
+    }
 
     fn draw(&self, _state: &(), _cursor: mouse::Cursor, _bounds: Rectangle) -> Frame {
         Frame {
             engine: self.engine.clone(),
             revision: self.revision,
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &(),
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        // A pointer over something pressable says so.
+        let Some(at) = cursor.position_in(bounds) else {
+            return mouse::Interaction::default();
+        };
+        let Ok(engine) = self.engine.lock() else {
+            return mouse::Interaction::default();
+        };
+        let Some(show) = engine.show() else {
+            return mouse::Interaction::default();
+        };
+        let target = [bounds.width.round() as u32, bounds.height.round() as u32];
+        let pressable = cuelight::render::canvas_at(
+            show.size,
+            target,
+            engine.scaling(),
+            [f64::from(at.x), f64::from(at.y)],
+        )
+        .is_some_and(|point| engine.pressed(point).is_some());
+        if pressable {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::default()
         }
     }
 }

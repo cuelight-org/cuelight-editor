@@ -22,6 +22,12 @@ from the bar, or drop one on the window. The show plays with its
 plays, R restarts, `,` and `.` step a frame (a second with Shift), and
 the playhead scrubs by replaying the show's inputs.
 
+The panel on the left is how a show is driven: its triggers as
+buttons, its variables as fields and toggles, its own values as
+readouts, and what happened lately. Keys the show names, and presses on
+its pressable layers, go to the show first (Ctrl reaches the editor's
+own shortcuts); what you fire is recorded, so scrubbing back replays it.
+
 ### In the browser
 
 The same program compiled to `wasm32` is published from `main` at

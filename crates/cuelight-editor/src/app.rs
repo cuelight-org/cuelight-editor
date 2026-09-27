@@ -1,17 +1,21 @@
 //! The window: an open bar with the transport, the stage beside what was
 //! opened, and a status line.
 
+use std::collections::BTreeMap;
+
+use cuelight_editor_core::inputs::{self, Inputs};
 use cuelight_editor_core::session::Instant;
 use iced::keyboard;
 use iced::widget::{
     Column, button, center, column, container, row, scrollable, shader, slider, space, text,
+    text_input, toggler,
 };
 use iced::{Element, Fill, Subscription, Task, Theme};
 
 use crate::dialog::{self, Picked};
 use crate::stage::Stage;
 use cuelight_editor_core::opened::{self, Opened, Summary};
-use cuelight_editor_core::session::Session;
+use cuelight_editor_core::session::{Session, What};
 
 pub struct App {
     session: Option<Session>,
@@ -21,6 +25,13 @@ pub struct App {
     /// Where the open show came from, and what it holds.
     source: String,
     summary: Summary,
+    /// What the show can be told.
+    inputs: Inputs,
+    /// Variable fields being typed into, before they are submitted.
+    edits: BTreeMap<String, String>,
+    /// What each variable's field shows: the typed text while editing,
+    /// the current value otherwise. Kept here because a field borrows it.
+    fields: BTreeMap<String, String>,
     /// The last thing worth telling: an error, or what was just opened.
     status: String,
     /// A dialog is up; a second one is not opened over it.
@@ -43,6 +54,17 @@ pub enum Message {
     Seek(f64),
     /// Forwards or back by this many seconds, paused.
     Step(f64),
+    /// A key went down; the show's keys come first, then the editor's.
+    KeyPressed(iced::keyboard::Key, iced::keyboard::Modifiers),
+    /// A press on the stage, at a canvas point.
+    Press([f64; 2]),
+    /// A trigger fired from the panel.
+    Fire(String),
+    /// A variable's field being typed into.
+    Edit(String, String),
+    /// A variable set from its field (parsed) or its toggle.
+    Set(String, String),
+    Record(bool),
 }
 
 impl App {
@@ -53,6 +75,9 @@ impl App {
             audio: None,
             source: String::new(),
             summary: Summary::default(),
+            inputs: Inputs::default(),
+            edits: BTreeMap::new(),
+            fields: BTreeMap::new(),
             status: String::new(),
             asking: false,
         };
@@ -84,6 +109,27 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.handle(message);
+        self.refresh_fields();
+        task
+    }
+
+    /// What the variable fields show now.
+    fn refresh_fields(&mut self) {
+        let Some(session) = &self.session else {
+            self.fields.clear();
+            return;
+        };
+        for (name, initial) in &self.inputs.variables {
+            let shown = match self.edits.get(name) {
+                Some(typed) => typed.clone(),
+                None => inputs::show_value(&session.value(name).unwrap_or_else(|| initial.clone())),
+            };
+            self.fields.insert(name.clone(), shown);
+        }
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::OpenFile => {
                 if self.asking {
@@ -142,6 +188,62 @@ impl App {
                 }
                 Task::none()
             }
+            Message::KeyPressed(key, modifiers) => {
+                let name = key_name(&key);
+                // The show's keys first; with Ctrl held the editor's own
+                // shortcuts are reached whatever the show maps.
+                if !modifiers.control()
+                    && let Some(session) = &mut self.session
+                    && self.inputs.keys.contains_key(name.as_str())
+                {
+                    session.key(&name);
+                    return Task::none();
+                }
+                match name.as_str() {
+                    " " => self.update(Message::TogglePause),
+                    "r" => self.update(Message::Restart),
+                    "," | "<" => self.update(Message::Step(if modifiers.shift() {
+                        -1.0
+                    } else {
+                        -1.0 / 60.0
+                    })),
+                    "." | ">" => self.update(Message::Step(if modifiers.shift() {
+                        1.0
+                    } else {
+                        1.0 / 60.0
+                    })),
+                    _ => Task::none(),
+                }
+            }
+            Message::Press(at) => {
+                if let Some(session) = &mut self.session {
+                    session.press(at);
+                }
+                Task::none()
+            }
+            Message::Fire(trigger) => {
+                if let Some(session) = &mut self.session {
+                    session.fire(&trigger);
+                }
+                Task::none()
+            }
+            Message::Edit(name, text) => {
+                self.edits.insert(name, text);
+                Task::none()
+            }
+            Message::Set(name, text) => {
+                self.edits.remove(&name);
+                if let Some(session) = &mut self.session {
+                    session.set(&name, inputs::parse_value(&text));
+                }
+                Task::none()
+            }
+            Message::Record(on) => {
+                if let Some(session) = &mut self.session {
+                    session.recording = on;
+                }
+                Task::none()
+            }
             Message::TogglePause => {
                 if let Some(session) = &mut self.session {
                     session.toggle_pause(Instant::now());
@@ -174,6 +276,8 @@ impl App {
                 } = opened;
                 self.source = source;
                 self.summary = summary;
+                self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
+                self.edits.clear();
                 self.listen(&sounds);
                 self.session = Some(Session::new(engine, driver));
             }
@@ -232,28 +336,9 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let keys = keyboard::listen().filter_map(|event| match event {
-            keyboard::Event::KeyPressed {
-                key: keyboard::Key::Named(keyboard::key::Named::Space),
-                ..
-            } => Some(Message::TogglePause),
-            keyboard::Event::KeyPressed {
-                key: keyboard::Key::Character(c),
-                modifiers,
-                ..
-            } => match c.as_str() {
-                "r" => Some(Message::Restart),
-                "," | "<" => Some(Message::Step(if modifiers.shift() {
-                    -1.0
-                } else {
-                    -1.0 / 60.0
-                })),
-                "." | ">" => Some(Message::Step(if modifiers.shift() {
-                    1.0
-                } else {
-                    1.0 / 60.0
-                })),
-                _ => None,
-            },
+            keyboard::Event::KeyPressed { key, modifiers, .. } => {
+                Some(Message::KeyPressed(key, modifiers))
+            }
             _ => None,
         });
         let mut subscriptions = vec![keys];
@@ -325,12 +410,14 @@ impl App {
                 let stage = shader(Stage {
                     engine: session.engine.clone(),
                     revision: session.revision,
+                    on_press: Message::Press,
                 })
                 .width(Fill)
                 .height(Fill);
                 row![
+                    scrollable(self.inputs_panel(session)).width(260).height(Fill),
                     container(stage).width(Fill).height(Fill),
-                    scrollable(summary(&self.summary)).width(320).height(Fill),
+                    scrollable(summary(&self.summary)).width(300).height(Fill),
                 ]
                 .into()
             }
@@ -341,6 +428,97 @@ impl App {
             .width(Fill);
 
         column![container(bar).padding(8).width(Fill), body, status].into()
+    }
+}
+
+impl App {
+    /// The show's inputs: triggers as buttons, variables as fields, the
+    /// show's own values as readouts, and what happened lately.
+    fn inputs_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
+        let mut panel = Column::new().spacing(6).padding(12);
+        panel = panel.push(
+            toggler(session.recording)
+                .label("Record what I fire")
+                .on_toggle(Message::Record)
+                .size(16),
+        );
+        if !self.inputs.triggers.is_empty() {
+            panel = panel.push(text("TRIGGERS").size(12));
+            for trigger in &self.inputs.triggers {
+                let mut label = trigger.clone();
+                let keys: Vec<&str> = self
+                    .inputs
+                    .keys
+                    .iter()
+                    .filter(|(_, t)| *t == trigger)
+                    .map(|(k, _)| if k == " " { "Space" } else { k.as_str() })
+                    .collect();
+                if !keys.is_empty() {
+                    label = format!("{trigger}  [{}]", keys.join(", "));
+                }
+                panel = panel.push(
+                    button(text(label).size(14))
+                        .on_press(Message::Fire(trigger.clone()))
+                        .width(Fill),
+                );
+            }
+        }
+        if !self.inputs.variables.is_empty() {
+            panel = panel.push(text("VARIABLES").size(12));
+            for (name, initial) in &self.inputs.variables {
+                let current = session.value(name).unwrap_or_else(|| initial.clone());
+                let control: Element<'a, Message> = match current {
+                    cuelight::Value::Bool(on) => toggler(on)
+                        .on_toggle(move |on| Message::Set(name.clone(), on.to_string()))
+                        .size(16)
+                        .into(),
+                    _ => {
+                        let shown: &'a str =
+                            self.fields.get(name).map(String::as_str).unwrap_or("");
+                        text_input("", shown)
+                            .on_input(move |t| Message::Edit(name.clone(), t))
+                            .on_submit(Message::Set(name.clone(), shown.to_owned()))
+                            .size(14)
+                            .width(110)
+                            .into()
+                    }
+                };
+                panel = panel.push(row![text(name).size(14).width(Fill), control].spacing(8));
+            }
+        }
+        if !self.inputs.values.is_empty() {
+            panel = panel.push(text("VALUES").size(12));
+            for name in &self.inputs.values {
+                let shown = session
+                    .value(name)
+                    .map(|v| inputs::show_value(&v))
+                    .unwrap_or_default();
+                panel = panel
+                    .push(row![text(name).size(14).width(Fill), text(shown).size(14)].spacing(8));
+            }
+        }
+        if !session.happened.is_empty() {
+            panel = panel.push(text("HAPPENED").size(12));
+            for item in session.happened.iter().rev().take(14) {
+                let line = match &item.what {
+                    What::Fired(t) => format!("{:6.2}  fired {t}", item.at),
+                    What::Set(n, v) => format!("{:6.2}  {n} = {}", item.at, inputs::show_value(v)),
+                    What::Event(t) => format!("{:6.2}  show fired {t}", item.at),
+                };
+                panel = panel.push(text(line).size(12));
+            }
+        }
+        panel
+    }
+}
+
+/// A key's name as a browser gives it, which is how a show names one.
+fn key_name(key: &keyboard::Key) -> String {
+    match key {
+        keyboard::Key::Character(c) => c.to_string(),
+        keyboard::Key::Named(keyboard::key::Named::Space) => " ".to_owned(),
+        keyboard::Key::Named(named) => format!("{named:?}"),
+        keyboard::Key::Unidentified => String::new(),
     }
 }
 
@@ -438,6 +616,61 @@ mod tests {
             app.session.as_ref().unwrap().time,
             0.0,
             "a step back stops at the start"
+        );
+    }
+
+    #[test]
+    fn keys_presses_and_buttons_reach_the_show() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        assert!(app.inputs.triggers.contains("go"));
+        assert_eq!(app.inputs.keys.get(" ").map(String::as_str), Some("go"));
+
+        // The show maps Space to `go`, so Space fires it rather than pausing.
+        let _ = app.update(Message::KeyPressed(
+            keyboard::Key::Named(keyboard::key::Named::Space),
+            keyboard::Modifiers::empty(),
+        ));
+        let session = app.session.as_ref().unwrap();
+        assert!(!session.paused);
+        assert!(
+            matches!(session.happened.back().map(|h| &h.what), Some(What::Fired(t)) if t == "go")
+        );
+
+        // With Ctrl, the editor's own Space pauses.
+        let _ = app.update(Message::KeyPressed(
+            keyboard::Key::Named(keyboard::key::Named::Space),
+            keyboard::Modifiers::CTRL,
+        ));
+        assert!(app.session.as_ref().unwrap().paused);
+
+        // A press on the dot fires `go`; one on the floor fires nothing.
+        let _ = app.update(Message::Press([32.0, 14.0]));
+        let _ = app.update(Message::Press([10.0, 27.0]));
+        let fired = app
+            .session
+            .as_ref()
+            .unwrap()
+            .happened
+            .iter()
+            .filter(|h| matches!(&h.what, What::Fired(t) if t == "go"))
+            .count();
+        assert_eq!(fired, 2);
+
+        let _ = app.update(Message::Set("lit".to_owned(), "true".to_owned()));
+        assert_eq!(
+            app.session.as_ref().unwrap().value("lit"),
+            Some(cuelight::Value::Bool(true))
+        );
+        let _ = app.update(Message::Fire("go".to_owned()));
+        let mut ui = simulator(app.view());
+        assert!(
+            ui.find("go  [Space]").is_ok(),
+            "the trigger's button names its key"
         );
     }
 }

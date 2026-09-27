@@ -1,16 +1,18 @@
 //! The window: an open bar with the transport, the stage beside what was
 //! opened, and a status line.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use cuelight_editor_core::inputs::{self, Inputs, Place};
 use cuelight_editor_core::session::Instant;
 use iced::keyboard;
+use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
-    Column, button, center, column, container, row, scrollable, shader, slider, space, text,
-    text_input, toggler,
+    Column, button, center, column, container, responsive, row, scrollable, shader, slider, space,
+    text, text_input, toggler,
 };
-use iced::{Element, Fill, Subscription, Task, Theme};
+use iced::{Element, Fill, Size, Subscription, Task, Theme};
 
 use crate::dialog::{self, Picked};
 use crate::stage::Stage;
@@ -36,6 +38,31 @@ pub struct App {
     status: String,
     /// A dialog is up; a second one is not opened over it.
     asking: bool,
+    /// How large the stage draws the show.
+    zoom: Zoom,
+    /// The scale that fits the show into the stage area, as the last
+    /// layout found it: what zooming in or out starts from while fitted.
+    fitted: Cell<f32>,
+}
+
+/// The stage's magnification.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Zoom {
+    /// As large as the stage area allows, letterboxed like a player.
+    Fit,
+    /// One show pixel is this many logical pixels; 1.0 is 100%.
+    Scale(f32),
+}
+
+impl Zoom {
+    const MIN: f32 = 0.05;
+    const MAX: f32 = 16.0;
+    /// One step of the zoom buttons.
+    const STEP: f32 = 1.25;
+
+    fn scaled(scale: f32) -> Self {
+        Self::Scale(scale.clamp(Self::MIN, Self::MAX))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +94,9 @@ pub enum Message {
     Record(bool),
     /// The driver switched on or off.
     Drive(bool),
+    Zoom(Zoom),
+    /// Zoom in (above 1) or out (below 1) from the scale shown now.
+    ZoomBy(f32),
 }
 
 impl App {
@@ -82,6 +112,8 @@ impl App {
             fields: BTreeMap::new(),
             status: String::new(),
             asking: false,
+            zoom: Zoom::Fit,
+            fitted: Cell::new(1.0),
         };
         // A path on the command line opens at once (desktop only).
         #[cfg(not(target_arch = "wasm32"))]
@@ -204,6 +236,11 @@ impl App {
                 match name.as_str() {
                     " " => self.update(Message::TogglePause),
                     "r" => self.update(Message::Restart),
+                    "f" | "F" => self.update(Message::Zoom(Zoom::Fit)),
+                    "0" if modifiers.control() => self.update(Message::Zoom(Zoom::Fit)),
+                    "1" if modifiers.control() => self.update(Message::Zoom(Zoom::Scale(1.0))),
+                    "=" | "+" if modifiers.control() => self.update(Message::ZoomBy(Zoom::STEP)),
+                    "-" if modifiers.control() => self.update(Message::ZoomBy(1.0 / Zoom::STEP)),
                     "," | "<" => self.update(Message::Step(if modifiers.shift() {
                         -1.0
                     } else {
@@ -268,6 +305,22 @@ impl App {
                 }
                 Task::none()
             }
+            Message::Zoom(zoom) => {
+                self.zoom = zoom;
+                Task::none()
+            }
+            Message::ZoomBy(factor) => {
+                self.zoom = Zoom::scaled(self.scale() * factor);
+                Task::none()
+            }
+        }
+    }
+
+    /// The scale the stage draws at now.
+    fn scale(&self) -> f32 {
+        match self.zoom {
+            Zoom::Fit => self.fitted.get(),
+            Zoom::Scale(scale) => scale,
         }
     }
 
@@ -425,21 +478,12 @@ impl App {
                 .size(18),
             )
             .into(),
-            Some(session) => {
-                let stage = shader(Stage {
-                    engine: session.engine.clone(),
-                    revision: session.revision,
-                    on_press: Message::Press,
-                })
-                .width(Fill)
-                .height(Fill);
-                row![
-                    scrollable(self.inputs_panel(session)).width(260).height(Fill),
-                    container(stage).width(Fill).height(Fill),
-                    scrollable(summary(&self.summary)).width(300).height(Fill),
-                ]
-                .into()
-            }
+            Some(session) => row![
+                scrollable(self.inputs_panel(session)).width(260).height(Fill),
+                responsive(move |size| self.stage(session, size)),
+                scrollable(summary(&self.summary)).width(300).height(Fill),
+            ]
+            .into(),
         };
 
         let status = container(text(&self.status).size(13))
@@ -451,6 +495,65 @@ impl App {
 }
 
 impl App {
+    /// The stage area: a zoom bar over the show drawn at its scale,
+    /// centred while it fits and scrolled once it does not.
+    fn stage<'a>(&'a self, session: &'a Session, size: Size) -> Element<'a, Message> {
+        const BAR: f32 = 36.0;
+        const MARGIN: f32 = 8.0;
+        let [show_w, show_h] = self.summary.size.map(|n| n.max(1) as f32);
+        let room = Size::new(
+            (size.width - 2.0 * MARGIN).max(1.0),
+            (size.height - BAR - 2.0 * MARGIN).max(1.0),
+        );
+        let fit = (room.width / show_w).min(room.height / show_h);
+        self.fitted.set(fit);
+        let scale = match self.zoom {
+            Zoom::Fit => fit,
+            Zoom::Scale(scale) => scale,
+        };
+        let (w, h) = ((show_w * scale).round(), (show_h * scale).round());
+
+        let zoom_button = |label: &'a str, zoom: Zoom| {
+            let mut b = button(text(label).size(13)).on_press(Message::Zoom(zoom));
+            if self.zoom == zoom {
+                b = b.style(button::secondary);
+            }
+            b
+        };
+        let bar = row![
+            zoom_button("Fit", Zoom::Fit),
+            zoom_button("100%", Zoom::Scale(1.0)),
+            button(text("-").size(13)).on_press(Message::ZoomBy(1.0 / Zoom::STEP)),
+            button(text("+").size(13)).on_press(Message::ZoomBy(Zoom::STEP)),
+            text(format!("{:.0}%", scale * 100.0)).size(13),
+        ]
+        .spacing(6)
+        .align_y(iced::Center);
+
+        let stage = shader(Stage {
+            engine: session.engine.clone(),
+            revision: session.revision,
+            on_press: Message::Press,
+        })
+        .width(w)
+        .height(h);
+        // Centred in the room it has; past that, scrolled.
+        let left = ((room.width - w) / 2.0).max(0.0) + MARGIN;
+        let top = ((room.height - h) / 2.0).max(0.0) + MARGIN;
+        let placed = container(stage).padding([top, left]);
+        let scrolled = scrollable(placed)
+            .direction(Direction::Both {
+                vertical: Scrollbar::default(),
+                horizontal: Scrollbar::default(),
+            })
+            .width(Fill)
+            .height(Fill);
+        column![container(bar).padding([4, 8]).height(BAR), scrolled]
+            .width(Fill)
+            .height(Fill)
+            .into()
+    }
+
     /// The show's inputs: triggers as buttons, variables as fields, the
     /// show's own values as readouts, and what happened lately.
     fn inputs_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
@@ -627,6 +730,45 @@ mod tests {
         assert!(ui.find("mini (format 1)").is_ok());
         assert!(ui.find("64 x 32").is_ok());
         assert!(ui.find("Pause").is_ok(), "an opened show plays");
+    }
+
+    #[test]
+    fn the_stage_zooms_and_fits_again() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        assert_eq!(app.zoom, Zoom::Fit);
+        let mut ui = simulator(app.view());
+        assert!(ui.find("Fit").is_ok());
+        let _ = ui.click("100%");
+        for message in ui.into_messages() {
+            let _ = app.update(message);
+        }
+        assert_eq!(app.zoom, Zoom::Scale(1.0));
+        let _ = app.update(Message::ZoomBy(Zoom::STEP));
+        assert_eq!(app.zoom, Zoom::Scale(Zoom::STEP));
+        {
+            let mut ui = simulator(app.view());
+            assert!(ui.find("125%").is_ok(), "the bar shows the scale");
+        }
+        let _ = app.update(Message::KeyPressed(
+            keyboard::Key::Character("f".into()),
+            keyboard::Modifiers::empty(),
+        ));
+        assert_eq!(app.zoom, Zoom::Fit);
+        // Zooming out of a fit starts from the fitted scale, which the
+        // layout found.
+        {
+            let mut ui = simulator(app.view());
+            let _ = ui.find("Fit");
+        }
+        let fitted = app.fitted.get();
+        assert!(fitted > 0.0 && fitted != 1.0, "{fitted}");
+        let _ = app.update(Message::ZoomBy(1.0 / Zoom::STEP));
+        assert_eq!(app.zoom, Zoom::Scale(fitted / Zoom::STEP));
     }
 
     #[test]

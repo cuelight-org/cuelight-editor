@@ -53,6 +53,17 @@ impl App {
             let path = std::path::PathBuf::from(path);
             return (app, Task::done(Message::Dropped(path)));
         }
+        // A page asked to open a show (`?show=<url>`) fetches it.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut app = app;
+            app.asking = true;
+            (
+                app,
+                Task::perform(dialog::fetch_show_from_query(), Message::Picked),
+            )
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         (app, Task::none())
     }
 

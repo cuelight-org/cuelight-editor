@@ -41,3 +41,31 @@ pub async fn pick_folder() -> Option<Picked> {
         .await?;
     Some(Picked::Path(picked.path().to_owned()))
 }
+
+/// In a browser, the show the page was asked to open: `?show=<url>`, a
+/// packed show or a loose document, fetched as bytes. `None` when the
+/// page was opened plainly.
+#[cfg(target_arch = "wasm32")]
+pub async fn fetch_show_from_query() -> Option<Picked> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let window = web_sys::window()?;
+    let search = window.location().search().ok()?;
+    let url = web_sys::UrlSearchParams::new_with_str(&search)
+        .ok()?
+        .get("show")?;
+    let response: web_sys::Response = JsFuture::from(window.fetch_with_str(&url))
+        .await
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    if !response.ok() {
+        log::warn!("could not fetch {url}: status {}", response.status());
+        return None;
+    }
+    let buffer = JsFuture::from(response.array_buffer().ok()?).await.ok()?;
+    let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+    let name = url.rsplit('/').next().unwrap_or("show.cuelight").to_owned();
+    Some(Picked::File { name, bytes })
+}

@@ -717,11 +717,15 @@ dependencies = [
  "env_logger",
  "iced",
  "iced_test",
+ "js-sys",
  "log",
  "rfd",
  "serde_json",
  "tempfile",
  "vello",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wgpu",
 ]
 

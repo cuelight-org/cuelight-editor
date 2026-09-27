@@ -695,7 +695,7 @@ dependencies = [
 [[package]]
 name = "cuelight"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=fbce04149e96daf92e1e8076638b8e4550ea72f0#fbce04149e96daf92e1e8076638b8e4550ea72f0"
+source = "git+https://github.com/francisdb/cuelight?rev=ac028b9b52418c2c817e7272984155f7fdf15c3b#ac028b9b52418c2c817e7272984155f7fdf15c3b"
 dependencies = [
  "png",
  "pollster 1.0.1",
@@ -721,12 +721,14 @@ dependencies = [
  "rfd",
  "serde_json",
  "tempfile",
+ "vello",
+ "wgpu",
 ]
 
 [[package]]
 name = "cuelight-loader"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=fbce04149e96daf92e1e8076638b8e4550ea72f0#fbce04149e96daf92e1e8076638b8e4550ea72f0"
+source = "git+https://github.com/francisdb/cuelight?rev=ac028b9b52418c2c817e7272984155f7fdf15c3b#ac028b9b52418c2c817e7272984155f7fdf15c3b"
 dependencies = [
  "cuelight",
  "png",

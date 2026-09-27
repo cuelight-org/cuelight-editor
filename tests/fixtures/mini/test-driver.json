@@ -1,0 +1,1 @@
+{ "loop": true, "steps": [{ "wait": 0.5 }, { "trigger": "go" }, { "set": { "lit": true } }, { "wait": 1.0 }, { "set": { "lit": false } }] }

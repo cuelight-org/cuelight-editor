@@ -1,0 +1,37 @@
+[package]
+name = "cuelight-editor"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.93"
+description = "Editor for cuelight shows"
+license = "MIT"
+repository = "https://github.com/francisdb/cuelight-editor"
+publish = false
+
+[dependencies]
+# The engine and its loader, pinned to a commit of cuelight main. Move
+# both together, and iced with them when wgpu changes (see README).
+cuelight = { git = "https://github.com/francisdb/cuelight", rev = "fbce04149e96daf92e1e8076638b8e4550ea72f0" }
+cuelight-loader = { git = "https://github.com/francisdb/cuelight", rev = "fbce04149e96daf92e1e8076638b8e4550ea72f0" }
+# iced is unreleased on the wgpu the engine uses (29), so it is pinned to
+# a commit of master. The rev is the last on wgpu 29 that we checked.
+iced = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2" }
+rfd = "0.17"
+log = "0.4"
+serde_json = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+console_log = "1"
+
+[dev-dependencies]
+iced_test = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2" }
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

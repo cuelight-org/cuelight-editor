@@ -15,6 +15,7 @@ publish = false
 [workspace.dependencies]
 cuelight = { git = "https://github.com/francisdb/cuelight", rev = "ac028b9b52418c2c817e7272984155f7fdf15c3b" }
 cuelight-loader = { git = "https://github.com/francisdb/cuelight", rev = "ac028b9b52418c2c817e7272984155f7fdf15c3b" }
+cuelight-audio = { git = "https://github.com/francisdb/cuelight", rev = "ac028b9b52418c2c817e7272984155f7fdf15c3b", default-features = false }
 # iced is unreleased on the wgpu the engine uses (29), so it is pinned to
 # a commit of master: the last on wgpu 29 that we checked.
 iced = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2" }

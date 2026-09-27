@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 cuelight.workspace = true
 cuelight-loader.workspace = true
+# Decoding a show's sounds, for their lengths; playing them is the host's.
+cuelight-audio.workspace = true
 log.workspace = true
 serde_json.workspace = true
 # The clock's instant, which a browser has no std one of.

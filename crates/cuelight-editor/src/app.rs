@@ -4,7 +4,7 @@
 use cuelight_editor_core::session::Instant;
 use iced::keyboard;
 use iced::widget::{
-    Column, button, center, column, container, row, scrollable, shader, space, text,
+    Column, button, center, column, container, row, scrollable, shader, slider, space, text,
 };
 use iced::{Element, Fill, Subscription, Task, Theme};
 
@@ -15,6 +15,9 @@ use cuelight_editor_core::session::Session;
 
 pub struct App {
     session: Option<Session>,
+    /// The sound device, opened for a show that has sounds (desktop only).
+    #[cfg(not(target_arch = "wasm32"))]
+    audio: Option<cuelight_audio::Output>,
     /// Where the open show came from, and what it holds.
     source: String,
     summary: Summary,
@@ -36,12 +39,18 @@ pub enum Message {
     Tick(Instant),
     TogglePause,
     Restart,
+    /// The playhead dragged to a time.
+    Seek(f64),
+    /// Forwards or back by this many seconds, paused.
+    Step(f64),
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
         let app = Self {
             session: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            audio: None,
             source: String::new(),
             summary: Summary::default(),
             status: String::new(),
@@ -112,12 +121,33 @@ impl App {
             Message::Tick(now) => {
                 if let Some(session) = &mut self.session {
                     session.tick(now);
+                    self.hear();
+                }
+                Task::none()
+            }
+            Message::Seek(to) => {
+                if let Some(session) = &mut self.session {
+                    // Dragging the playhead pauses; sound stays silent
+                    // while scrubbing.
+                    session.paused = true;
+                    session.seek(to, Instant::now());
+                    self.hush();
+                }
+                Task::none()
+            }
+            Message::Step(dt) => {
+                if let Some(session) = &mut self.session {
+                    session.step(dt, Instant::now());
+                    self.hush();
                 }
                 Task::none()
             }
             Message::TogglePause => {
                 if let Some(session) = &mut self.session {
                     session.toggle_pause(Instant::now());
+                    if session.paused {
+                        self.hush();
+                    }
                 }
                 Task::none()
             }
@@ -140,15 +170,63 @@ impl App {
                     engine,
                     summary,
                     driver,
+                    sounds,
                 } = opened;
                 self.source = source;
                 self.summary = summary;
+                self.listen(&sounds);
                 self.session = Some(Session::new(engine, driver));
             }
             Err(error) => {
                 self.status = format!("could not open: {error}");
                 log::warn!("{}", self.status);
             }
+        }
+    }
+
+    /// Give the sound device the show's sounds, opening it for the first
+    /// show that has any.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn listen(&mut self, sounds: &[(String, std::sync::Arc<cuelight_editor_core::opened::Sound>)]) {
+        if sounds.is_empty() {
+            return;
+        }
+        if self.audio.is_none() {
+            self.audio = cuelight_audio::Output::open()
+                .map_err(|error| log::warn!("no sound: {error}"))
+                .ok();
+        }
+        if let Some(audio) = &self.audio {
+            for (name, sound) in sounds {
+                audio.set_sound(name, sound.clone());
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn listen(
+        &mut self,
+        _sounds: &[(String, std::sync::Arc<cuelight_editor_core::opened::Sound>)],
+    ) {
+    }
+
+    /// Play what the show sounds like now.
+    fn hear(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(audio), Some(session)) = (&self.audio, &self.session) {
+            let engine = session.engine.lock().expect("the engine is not poisoned");
+            match engine.voices() {
+                Ok(voices) => audio.apply(&voices),
+                Err(error) => log::warn!("voices: {error}"),
+            }
+        }
+    }
+
+    /// Silence, for a scrub or a pause.
+    fn hush(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(audio) = &self.audio {
+            audio.apply(&[]);
         }
     }
 
@@ -160,8 +238,22 @@ impl App {
             } => Some(Message::TogglePause),
             keyboard::Event::KeyPressed {
                 key: keyboard::Key::Character(c),
+                modifiers,
                 ..
-            } if c == "r" => Some(Message::Restart),
+            } => match c.as_str() {
+                "r" => Some(Message::Restart),
+                "," | "<" => Some(Message::Step(if modifiers.shift() {
+                    -1.0
+                } else {
+                    -1.0 / 60.0
+                })),
+                "." | ">" => Some(Message::Step(if modifiers.shift() {
+                    1.0
+                } else {
+                    1.0 / 60.0
+                })),
+                _ => None,
+            },
             _ => None,
         });
         let mut subscriptions = vec![keys];
@@ -193,15 +285,29 @@ impl App {
             );
         }
         if let Some(session) = &self.session {
+            // The playhead covers one pass of the driver, or as far as
+            // the show has played, whichever is longer.
+            let end = session
+                .pass_length()
+                .unwrap_or(60.0)
+                .max(session.time)
+                .max(1.0);
             bar = bar
                 .push(space::horizontal().width(16))
+                .push(button("|<").on_press(Message::Restart))
+                .push(button("<").on_press(Message::Step(-1.0 / 60.0)))
                 .push(
                     button(if session.paused { "Play" } else { "Pause" })
                         .on_press(Message::TogglePause),
                 )
-                .push(button("Restart").on_press(Message::Restart))
-                .push(text(format!("{:7.2} s", session.time)).size(14))
-                .push(space::horizontal())
+                .push(button(">").on_press(Message::Step(1.0 / 60.0)))
+                .push(
+                    slider(0.0..=end, session.time, Message::Seek)
+                        .step(1.0 / 60.0)
+                        .width(Fill),
+                )
+                .push(text(format!("{:7.2} / {end:.0} s", session.time)).size(14))
+                .push(space::horizontal().width(16))
                 .push(text(&self.source).size(14));
         }
 
@@ -304,6 +410,34 @@ mod tests {
             app.session.as_ref().unwrap().time,
             time,
             "paused shows stand still"
+        );
+    }
+
+    #[test]
+    fn seeking_and_stepping_land_where_asked() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        let _ = app.update(Message::Seek(1.25));
+        let session = app.session.as_ref().unwrap();
+        assert!((session.time - 1.25).abs() < 1e-9);
+        assert!(session.paused, "dragging the playhead pauses");
+        assert_eq!(
+            session.engine.lock().unwrap().time(),
+            1.25,
+            "the engine is there too"
+        );
+        let _ = app.update(Message::Step(-1.0 / 60.0));
+        let session = app.session.as_ref().unwrap();
+        assert!((session.time - (1.25 - 1.0 / 60.0)).abs() < 1e-9);
+        let _ = app.update(Message::Step(-5.0));
+        assert_eq!(
+            app.session.as_ref().unwrap().time,
+            0.0,
+            "a step back stops at the start"
         );
     }
 }

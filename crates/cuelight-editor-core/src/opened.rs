@@ -5,8 +5,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
+use std::sync::Arc;
 
 use cuelight::{Engine, Layer, LayerKind, Show};
+pub use cuelight_audio::Sound;
+use cuelight_loader::SoundFile;
 
 /// What was opened, where from, and what it contained.
 pub struct Opened {
@@ -17,6 +20,9 @@ pub struct Opened {
     pub summary: Summary,
     /// The driver that came with the show, to play it by.
     pub driver: Option<cuelight_loader::Driver>,
+    /// The show's sounds, decoded, for a host with a sound device. Their
+    /// lengths are already registered with the engine.
+    pub sounds: Vec<(String, Arc<Sound>)>,
 }
 
 /// The facts about a show worth showing before there is a stage.
@@ -81,9 +87,9 @@ impl Opened {
         summary.images = loaded.images.len();
         summary.vectors = loaded.vectors.len();
         summary.fonts = loaded.fonts.len();
-        summary.sounds = loaded.sounds.len();
         summary.videos = loaded.videos.len();
         summary.driver = loaded.driver.as_ref().map(|d| (d.steps.len(), d.looping));
+        let sounds = decode_sounds(&mut engine, &loaded.sounds, &mut summary);
         summary
             .problems
             .extend(loaded.skipped.iter().map(|p| format!("skipped {p}")));
@@ -98,6 +104,7 @@ impl Opened {
             engine,
             summary,
             driver: loaded.driver,
+            sounds,
         })
     }
 
@@ -120,8 +127,8 @@ impl Opened {
         summary.images = loaded.images.len();
         summary.vectors = loaded.vectors.len();
         summary.fonts = loaded.fonts.len();
-        summary.sounds = loaded.sounds.len();
         summary.driver = loaded.driver.as_ref().map(|d| (d.steps.len(), d.looping));
+        let sounds = decode_sounds(&mut engine, &loaded.sounds, &mut summary);
         summary
             .problems
             .extend(loaded.skipped.iter().map(|p| format!("skipped {p}")));
@@ -136,8 +143,37 @@ impl Opened {
             engine,
             summary,
             driver: loaded.driver,
+            sounds,
         })
     }
+}
+
+/// Decode the show's sounds and tell the engine how long each is, so a
+/// sound's `on_end` fires when it should. A sound that does not decode
+/// is a problem, not a failure to open.
+fn decode_sounds(
+    engine: &mut Engine,
+    files: &[SoundFile],
+    summary: &mut Summary,
+) -> Vec<(String, Arc<Sound>)> {
+    let mut sounds = Vec::new();
+    for file in files {
+        match Sound::decode(&file.extension, &file.bytes) {
+            Ok(sound) => match engine.set_sound(&file.name, sound.duration()) {
+                Ok(()) => {
+                    summary.sounds += 1;
+                    sounds.push((file.name.clone(), Arc::new(sound)));
+                }
+                Err(error) => summary
+                    .problems
+                    .push(format!("sound {}: {error}", file.name)),
+            },
+            Err(error) => summary
+                .problems
+                .push(format!("sound {} does not decode: {error}", file.name)),
+        }
+    }
+    sounds
 }
 
 /// The show document's text for a path of any of the three forms, read

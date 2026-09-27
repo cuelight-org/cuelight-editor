@@ -18,7 +18,9 @@ cargo run --release -- ../cuelight-examples/deck   # or open one straight away
 
 Open a show folder, a packed show (`.cuelight`) or a loose `show.json`
 from the bar, or drop one on the window. The show plays with its
-`test-driver.json`; Space pauses and plays, R restarts.
+`test-driver.json`, sound included on the desktop; Space pauses and
+plays, R restarts, `,` and `.` step a frame (a second with Shift), and
+the playhead scrubs by replaying the show's inputs.
 
 ### In the browser
 

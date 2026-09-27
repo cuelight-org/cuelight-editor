@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use cuelight_editor_core::inputs::{self, Inputs, Place};
 use cuelight_editor_core::session::Instant;
 use iced::keyboard;
+use iced::widget::pane_grid::{self, Axis, Configuration};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
     Column, button, center, column, container, responsive, row, scrollable, shader, slider, space,
@@ -38,11 +39,21 @@ pub struct App {
     status: String,
     /// A dialog is up; a second one is not opened over it.
     asking: bool,
+    /// The three areas side by side, with splits to drag.
+    panes: pane_grid::State<Pane>,
     /// How large the stage draws the show.
     zoom: Zoom,
     /// The scale that fits the show into the stage area, as the last
     /// layout found it: what zooming in or out starts from while fitted.
     fitted: Cell<f32>,
+}
+
+/// An area of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Inputs,
+    Stage,
+    Summary,
 }
 
 /// The stage's magnification.
@@ -97,6 +108,8 @@ pub enum Message {
     Zoom(Zoom),
     /// Zoom in (above 1) or out (below 1) from the scale shown now.
     ZoomBy(f32),
+    /// A split between two areas dragged.
+    Resized(pane_grid::ResizeEvent),
 }
 
 impl App {
@@ -112,6 +125,17 @@ impl App {
             fields: BTreeMap::new(),
             status: String::new(),
             asking: false,
+            panes: pane_grid::State::with_configuration(Configuration::Split {
+                axis: Axis::Vertical,
+                ratio: 0.24,
+                a: Box::new(Configuration::Pane(Pane::Inputs)),
+                b: Box::new(Configuration::Split {
+                    axis: Axis::Vertical,
+                    ratio: 0.7,
+                    a: Box::new(Configuration::Pane(Pane::Stage)),
+                    b: Box::new(Configuration::Pane(Pane::Summary)),
+                }),
+            }),
             zoom: Zoom::Fit,
             fitted: Cell::new(1.0),
         };
@@ -313,6 +337,10 @@ impl App {
                 self.zoom = Zoom::scaled(self.scale() * factor);
                 Task::none()
             }
+            Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
+                self.panes.resize(split, ratio);
+                Task::none()
+            }
         }
     }
 
@@ -478,11 +506,25 @@ impl App {
                 .size(18),
             )
             .into(),
-            Some(session) => row![
-                scrollable(self.inputs_panel(session)).width(260).height(Fill),
-                responsive(move |size| self.stage(session, size)),
-                scrollable(summary(&self.summary)).width(300).height(Fill),
-            ]
+            Some(session) => iced::widget::pane_grid(&self.panes, move |_, pane, _| {
+                pane_grid::Content::new(match pane {
+                    Pane::Inputs => Element::from(
+                        scrollable(self.inputs_panel(session))
+                            .width(Fill)
+                            .height(Fill),
+                    ),
+                    Pane::Stage => responsive(move |size| self.stage(session, size)).into(),
+                    Pane::Summary => scrollable(summary(&self.summary))
+                        .width(Fill)
+                        .height(Fill)
+                        .into(),
+                })
+            })
+            .on_resize(8, Message::Resized)
+            .spacing(4)
+            .min_size(120)
+            .width(Fill)
+            .height(Fill)
             .into(),
         };
 
@@ -769,6 +811,34 @@ mod tests {
         assert!(fitted > 0.0 && fitted != 1.0, "{fitted}");
         let _ = app.update(Message::ZoomBy(1.0 / Zoom::STEP));
         assert_eq!(app.zoom, Zoom::Scale(fitted / Zoom::STEP));
+    }
+
+    #[test]
+    fn the_splits_between_the_areas_move() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        let pane_grid::Node::Split { id, ratio, .. } = *app.panes.layout() else {
+            panic!("the areas are split");
+        };
+        let _ = app.update(Message::Resized(pane_grid::ResizeEvent {
+            split: id,
+            ratio: 0.4,
+        }));
+        let pane_grid::Node::Split { ratio: now, .. } = *app.panes.layout() else {
+            panic!("still split");
+        };
+        assert_ne!(ratio, now);
+        assert!((now - 0.4).abs() < 1e-6);
+        let mut ui = simulator(app.view());
+        assert!(ui.find("Fit").is_ok(), "the stage is in its pane");
+        assert!(
+            ui.find("mini (format 1)").is_ok(),
+            "the summary is in its pane"
+        );
     }
 
     #[test]

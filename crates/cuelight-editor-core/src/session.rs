@@ -5,9 +5,10 @@
 //! caught up with rather than lost. Pausing keeps the show where it is
 //! and moves the anchor under it when playing goes on.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use cuelight::Engine;
+use cuelight::{Engine, Event, Value};
 use cuelight_loader::{Driver, DriverPlayer, Live, Step};
 use std::time::Duration;
 
@@ -27,7 +28,32 @@ pub struct Session {
     pub paused: bool,
     /// Bumped whenever the show moved, so a frame is redrawn only then.
     pub revision: u64,
+    /// Inputs fired by hand are recorded, so a scrub replays them.
+    pub recording: bool,
+    /// What happened lately, newest last: inputs given and events the
+    /// show fired, with the show time of each.
+    pub happened: VecDeque<Happened>,
 }
+
+/// One thing that happened in a session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Happened {
+    pub at: f64,
+    pub what: What,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum What {
+    /// A trigger fired by hand, by a key or by a press.
+    Fired(String),
+    /// A variable set by hand.
+    Set(String, Value),
+    /// A trigger the show fired itself: an `on_end`, a scene entered.
+    Event(String),
+}
+
+/// How much of the recent past the panel shows.
+const KEPT: usize = 60;
 
 impl Session {
     pub fn new(engine: Engine, driver: Option<Driver>) -> Self {
@@ -40,7 +66,99 @@ impl Session {
             time: 0.0,
             paused: false,
             revision: 0,
+            recording: true,
+            happened: VecDeque::new(),
         }
+    }
+
+    /// Fire a trigger as a host would, now.
+    pub fn fire(&mut self, trigger: &str) {
+        self.engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .trigger(trigger);
+        self.fired(trigger);
+    }
+
+    /// Set a variable as a host would, now. Not replayed by a scrub yet
+    /// (cuelight#222).
+    pub fn set(&mut self, name: &str, value: Value) {
+        self.engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .set_variable(name, value.clone());
+        self.note(What::Set(name.to_owned(), value));
+    }
+
+    /// A key, by the name a browser gives it; fires what the show says
+    /// it means, if anything.
+    pub fn key(&mut self, key: &str) -> Option<String> {
+        let fired = self
+            .engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .key(key);
+        if let Some(trigger) = &fired {
+            self.fired(trigger);
+        }
+        fired
+    }
+
+    /// A press at a canvas point; fires the pressable layer there or the
+    /// show's press-anywhere trigger, if any.
+    pub fn press(&mut self, at: [f64; 2]) -> Option<String> {
+        let fired = self
+            .engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .press(at);
+        if let Some(trigger) = &fired {
+            self.fired(trigger);
+        }
+        fired
+    }
+
+    /// What the show fired since the last look, added to `happened`.
+    pub fn collect_events(&mut self) {
+        let events = self
+            .engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .drain_events();
+        for event in events {
+            #[allow(unreachable_patterns)]
+            if let Event::Trigger(name) = event {
+                self.note(What::Event(name));
+            }
+        }
+    }
+
+    /// The current value of a variable or a show value, as the engine
+    /// reads it.
+    pub fn value(&self, name: &str) -> Option<Value> {
+        self.engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .value(name)
+    }
+
+    fn fired(&mut self, trigger: &str) {
+        if self.recording {
+            self.live.record(self.time, trigger);
+        }
+        self.note(What::Fired(trigger.to_owned()));
+        self.revision += 1;
+    }
+
+    fn note(&mut self, what: What) {
+        self.happened.push_back(Happened {
+            at: self.time,
+            what,
+        });
+        while self.happened.len() > KEPT {
+            self.happened.pop_front();
+        }
+        self.revision += 1;
     }
 
     /// A frame: move the show to the instant `now` stands for.
@@ -59,8 +177,10 @@ impl Session {
             player.advance(&mut engine, dt);
         }
         engine.advance_to(time);
+        drop(engine);
         self.time = time;
         self.revision += 1;
+        self.collect_events();
     }
 
     pub fn toggle_pause(&mut self, now: Instant) {
@@ -84,6 +204,12 @@ impl Session {
         self.time = to;
         self.anchor = now.checked_sub(Duration::from_secs_f64(to));
         self.revision += 1;
+        // A replay fires the show's own events again; they are not news.
+        let _ = self
+            .engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .drain_events();
     }
 
     /// Move by `dt` seconds, forwards or back, and stay paused there.
@@ -112,6 +238,8 @@ impl Session {
             .expect("the engine is not poisoned")
             .restart();
         self.player = self.driver.clone().map(DriverPlayer::new);
+        self.live = Live::default();
+        self.happened.clear();
         self.anchor = Some(now);
         self.time = 0.0;
         self.revision += 1;

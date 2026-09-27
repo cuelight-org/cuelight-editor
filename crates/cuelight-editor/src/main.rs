@@ -10,6 +10,13 @@ pub fn main() -> iced::Result {
     }
 
     iced::application(App::new, App::update, App::view)
+        // The UI's fonts travel with it: a browser has none of its own to
+        // offer, and the desktop then looks the same.
+        .fonts([
+            include_bytes!("../fonts/AtkinsonHyperlegible-Regular.ttf").as_slice(),
+            include_bytes!("../fonts/DMMono-Regular.ttf").as_slice(),
+        ])
+        .font(iced::Font::new("Atkinson Hyperlegible"))
         .title(App::title)
         .subscription(App::subscription)
         .window_size((1100.0, 700.0))

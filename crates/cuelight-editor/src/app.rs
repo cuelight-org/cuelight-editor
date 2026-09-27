@@ -418,7 +418,7 @@ impl App {
         let body: Element<'_, Message> = match &self.session {
             None => center(
                 text(if cfg!(target_arch = "wasm32") {
-                    "Open a packed show (.cuelight) or a show.json."
+                    "Open a packed show (.cuelight)."
                 } else {
                     "Open a show folder, a packed show (.cuelight) or a show.json, or drop one on this window."
                 })

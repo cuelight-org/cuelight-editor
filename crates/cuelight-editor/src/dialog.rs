@@ -13,11 +13,17 @@ pub enum Picked {
     File { name: String, bytes: Vec<u8> },
 }
 
-/// Ask for a show file: a packed show or a loose show document.
+/// Ask for a show file: a packed show, or on the desktop a loose show
+/// document too. A browser hands over one file without its folder, so
+/// there only a pack brings its assets along.
 pub async fn pick_file() -> Option<Picked> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let extensions: &[&str] = &["cuelight", "json"];
+    #[cfg(target_arch = "wasm32")]
+    let extensions: &[&str] = &["cuelight"];
     let picked = rfd::AsyncFileDialog::new()
         .set_title("Open a show")
-        .add_filter("cuelight show", &["cuelight", "json"])
+        .add_filter("cuelight show", extensions)
         .pick_file()
         .await?;
     #[cfg(not(target_arch = "wasm32"))]

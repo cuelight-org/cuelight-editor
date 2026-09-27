@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use cuelight::{Engine, Layer, LayerKind, Show};
@@ -14,6 +15,8 @@ pub struct Opened {
     pub source: String,
     pub engine: Engine,
     pub summary: Summary,
+    /// The driver that came with the show, to play it by.
+    pub driver: Option<cuelight_loader::Driver>,
 }
 
 /// The facts about a show worth showing before there is a stage.
@@ -94,6 +97,7 @@ impl Opened {
             source: path.display().to_string(),
             engine,
             summary,
+            driver: loaded.driver,
         })
     }
 
@@ -131,6 +135,7 @@ impl Opened {
             source: name.to_owned(),
             engine,
             summary,
+            driver: loaded.driver,
         })
     }
 }

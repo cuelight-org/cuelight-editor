@@ -5,13 +5,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use cuelight::{Layer, LayerKind, Show, Value};
+use cuelight::{DigitDisplay, Layer, LayerKind, Show, Value};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Inputs {
     /// Every trigger something in the show answers to, and every trigger
     /// a key or a press fires.
     pub triggers: BTreeSet<String>,
+    /// Where each trigger is listened to, which is how a panel groups
+    /// them: the ones that open a scene, the ones the show hears
+    /// anywhere, and the ones only one scene hears.
+    pub places: BTreeMap<String, Place>,
     /// The declared variables with their initial values.
     pub variables: BTreeMap<String, Value>,
     /// The values the show animates itself. Setting a variable of the
@@ -25,6 +29,17 @@ pub struct Inputs {
     pub press_anywhere: Option<String>,
 }
 
+/// Where a trigger is listened to.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Place {
+    /// Firing it enters this scene.
+    Opens(String),
+    /// The show's own layers hear it, or more than one scene does.
+    Anywhere,
+    /// Only this scene hears it.
+    Scene(String),
+}
+
 impl Inputs {
     pub fn of(show: &Show) -> Self {
         let mut triggers = show.triggers();
@@ -35,13 +50,87 @@ impl Inputs {
             presses(layers, &mut pressable);
         }
         triggers.extend(pressable.iter().map(|(_, trigger)| trigger.clone()));
+        let places = places(show, &triggers);
         Self {
             triggers,
+            places,
             variables: show.variables.clone(),
             values: show.values.keys().cloned().collect(),
             keys: show.input.keys.clone(),
             pressable,
             press_anywhere: show.input.press.clone(),
+        }
+    }
+}
+
+/// Where each trigger is heard: a scene it opens comes first, then the
+/// show's own layers or several scenes count as anywhere, then the one
+/// scene that hears it. A trigger nothing listens to (a key that fires
+/// into the void) counts as anywhere too.
+fn places(show: &Show, triggers: &BTreeSet<String>) -> BTreeMap<String, Place> {
+    let mut heard: BTreeMap<String, BTreeSet<Option<String>>> = BTreeMap::new();
+    let mut own = BTreeSet::new();
+    listened(&show.layers, &mut own);
+    for trigger in own {
+        heard.entry(trigger).or_default().insert(None);
+    }
+    for scene in &show.scenes {
+        let mut here = BTreeSet::new();
+        listened(&scene.layers, &mut here);
+        for trigger in here {
+            heard
+                .entry(trigger)
+                .or_default()
+                .insert(Some(scene.name.clone()));
+        }
+    }
+    let mut out = BTreeMap::new();
+    for scene in &show.scenes {
+        for trigger in scene.trigger.iter() {
+            out.insert(trigger.to_owned(), Place::Opens(scene.name.clone()));
+        }
+    }
+    for trigger in triggers {
+        if out.contains_key(trigger) {
+            continue;
+        }
+        let place = match heard.get(trigger) {
+            Some(where_) if where_.len() == 1 => match where_.iter().next().unwrap() {
+                Some(scene) => Place::Scene(scene.clone()),
+                None => Place::Anywhere,
+            },
+            _ => Place::Anywhere,
+        };
+        out.insert(trigger.clone(), place);
+    }
+    out
+}
+
+/// The triggers a layer tree listens to: its timelines, its media's
+/// play and stop, its reels' spin.
+fn listened(layers: &[Layer], out: &mut BTreeSet<String>) {
+    for layer in layers {
+        for timeline in &layer.timelines {
+            out.extend(timeline.trigger.iter().map(str::to_owned));
+        }
+        if let Some(media) = layer.kind.media() {
+            out.extend(
+                media
+                    .trigger
+                    .iter()
+                    .chain(media.stop.iter())
+                    .map(str::to_owned),
+            );
+        }
+        if let LayerKind::Digits {
+            display: DigitDisplay::Reel(reel),
+            ..
+        } = &layer.kind
+        {
+            out.extend(reel.spin.iter().map(str::to_owned));
+        }
+        if let LayerKind::Group { children, .. } = &layer.kind {
+            listened(children, out);
         }
     }
 }
@@ -84,5 +173,41 @@ pub fn show_value(value: &Value) -> String {
         }
         Value::Text(t) => t.clone(),
         _ => format!("{value:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn triggers_get_the_place_they_are_heard() {
+        let show: Show = serde_json::from_str(
+            r##"{ "format": 1, "name": "t", "size": [10, 10],
+                 "input": { "keys": { "ArrowRight": "next" } },
+                 "layers": [
+                   { "name": "bell", "type": "shape", "shape": { "rect": [0, 0, 1, 1] }, "fill": "#FFFFFF",
+                     "timelines": [{ "name": "ring", "trigger": "ring", "tracks": [] }] }
+                 ],
+                 "scenes": [
+                   { "name": "a", "trigger": "go_a", "layers": [
+                     { "name": "n", "type": "shape", "shape": { "rect": [0, 0, 1, 1] }, "fill": "#FFFFFF",
+                       "timelines": [{ "name": "next", "trigger": "next", "on_end": "go_b", "tracks": [] },
+                                     { "name": "only", "trigger": "only_a", "tracks": [] }] } ] },
+                   { "name": "b", "trigger": "go_b", "layers": [
+                     { "name": "n", "type": "shape", "shape": { "rect": [0, 0, 1, 1] }, "fill": "#FFFFFF",
+                       "timelines": [{ "name": "next", "trigger": "next", "tracks": [] }] } ] }
+                 ] }"##,
+        )
+        .unwrap();
+        let inputs = Inputs::of(&show);
+        assert_eq!(inputs.places["go_a"], Place::Opens("a".into()));
+        assert_eq!(
+            inputs.places["ring"],
+            Place::Anywhere,
+            "the show's own layers hear it"
+        );
+        assert_eq!(inputs.places["next"], Place::Anywhere, "two scenes hear it");
+        assert_eq!(inputs.places["only_a"], Place::Scene("a".into()));
     }
 }

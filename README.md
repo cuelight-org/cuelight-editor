@@ -39,24 +39,33 @@ the cuelight web player does.
 
 ## How it is built
 
-- `src/opened.rs` opens a show in any of its forms into a `cuelight::Engine`,
-  through `cuelight-loader`, and summarizes it. A show written for a
-  newer format than the editor knows is refused with the version it
-  wants.
-- `src/dialog.rs` is the open dialog, native and web (`rfd`).
-- `src/session.rs` plays a show: the engine, its driver and an anchored
-  clock, as the players keep time.
-- `src/stage.rs` draws it: an iced shader widget in which the engine's
-  presenter and vello render the frame into a texture, blitted into the
-  widget's rectangle. It is the players' own render path, so the stage
-  looks like them.
-- `src/app.rs` is the window: the open bar with the transport, the stage
-  beside the summary, the status line, and file drops on the desktop.
+Two crates in a workspace:
 
-Tests: `cargo test` opens a small show from `tests/fixtures/mini` as a
-folder, as a pack and as a loose document, and checks the window and the
-clock through `iced_test`. `cargo run --release --example seek_timing --
-<show>` measures what a seek and a reload cost.
+- `crates/cuelight-editor-core` is what the editor knows without a window,
+  with no iced and no GPU, so it compiles in seconds and its tests run
+  anywhere:
+  - `opened.rs` opens a show in any of its forms into a `cuelight::Engine`,
+    through `cuelight-loader`, and summarizes it. A show written for a
+    newer format than the editor knows is refused with the version it
+    wants.
+  - `session.rs` plays a show: the engine, its driver and an anchored
+    clock, as the players keep time.
+  - `examples/seek_timing.rs` measures what a seek and a reload cost:
+    `cargo run --release -p cuelight-editor-core --example seek_timing -- <show>`.
+- `crates/cuelight-editor` is the window:
+  - `stage.rs` draws the show: an iced shader widget in which the engine's
+    presenter and vello render the frame into a texture, blitted into the
+    widget's rectangle. It is the players' own render path, so the stage
+    looks like them.
+  - `dialog.rs` is the open dialog, native and web (`rfd`), and the
+    page's `?show=` opener.
+  - `app.rs` is the window: the open bar with the transport, the stage
+    beside the summary, the status line, and file drops on the desktop.
+
+Tests: `cargo test --workspace` opens a small show from
+`crates/cuelight-editor-core/tests/fixtures/mini` as a folder, as a pack
+and as a loose document, and checks the window and the clock through
+`iced_test`.
 
 ### Dependencies and versions
 

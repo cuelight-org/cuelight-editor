@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use cuelight::Engine;
 use cuelight_loader::{Driver, DriverPlayer};
-use iced::time::{Duration, Instant};
+use std::time::Duration;
+
+pub use web_time::Instant;
 
 pub struct Session {
     /// Shared with the stage, which reads it on the render thread.

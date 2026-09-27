@@ -1,17 +1,17 @@
 //! The window: an open bar with the transport, the stage beside what was
 //! opened, and a status line.
 
+use cuelight_editor_core::session::Instant;
 use iced::keyboard;
-use iced::time::Instant;
 use iced::widget::{
     Column, button, center, column, container, row, scrollable, shader, space, text,
 };
 use iced::{Element, Fill, Subscription, Task, Theme};
 
 use crate::dialog::{self, Picked};
-use crate::opened::{self, Opened, Summary};
-use crate::session::Session;
 use crate::stage::Stage;
+use cuelight_editor_core::opened::{self, Opened, Summary};
+use cuelight_editor_core::session::Session;
 
 pub struct App {
     session: Option<Session>,
@@ -273,7 +273,10 @@ mod tests {
     #[test]
     fn shows_what_it_opened() {
         let (mut app, _) = App::new();
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mini");
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
         let _ = app.update(Message::Dropped(dir.into()));
         assert!(app.status.starts_with("opened "), "{}", app.status);
         let mut ui = simulator(app.view());
@@ -285,19 +288,18 @@ mod tests {
     #[test]
     fn a_tick_moves_the_show_and_pausing_holds_it() {
         let (mut app, _) = App::new();
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mini");
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
         let _ = app.update(Message::Dropped(dir.into()));
         let start = Instant::now();
         let _ = app.update(Message::Tick(start));
-        let _ = app.update(Message::Tick(
-            start + iced::time::Duration::from_millis(500),
-        ));
+        let _ = app.update(Message::Tick(start + std::time::Duration::from_millis(500)));
         let time = app.session.as_ref().unwrap().time;
         assert!((time - 0.5).abs() < 1e-9, "{time}");
         let _ = app.update(Message::TogglePause);
-        let _ = app.update(Message::Tick(
-            start + iced::time::Duration::from_millis(900),
-        ));
+        let _ = app.update(Message::Tick(start + std::time::Duration::from_millis(900)));
         assert_eq!(
             app.session.as_ref().unwrap().time,
             time,

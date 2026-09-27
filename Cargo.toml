@@ -1,44 +1,26 @@
-[package]
-name = "cuelight-editor"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.0.1"
 edition = "2024"
 rust-version = "1.93"
-description = "Editor for cuelight shows"
 license = "MIT"
 repository = "https://github.com/francisdb/cuelight-editor"
 publish = false
 
-[dependencies]
-# The engine and its loader, pinned to a commit of cuelight main. Move
-# both together, and iced with them when wgpu changes (see README).
+# Every pin in one place. The engine crates move together, and iced with
+# them when wgpu changes (see README).
+[workspace.dependencies]
 cuelight = { git = "https://github.com/francisdb/cuelight", rev = "ac028b9b52418c2c817e7272984155f7fdf15c3b" }
 cuelight-loader = { git = "https://github.com/francisdb/cuelight", rev = "ac028b9b52418c2c817e7272984155f7fdf15c3b" }
 # iced is unreleased on the wgpu the engine uses (29), so it is pinned to
-# a commit of master. The rev is the last on wgpu 29 that we checked.
+# a commit of master: the last on wgpu 29 that we checked.
 iced = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2" }
-rfd = "0.17"
+iced_test = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2" }
 log = "0.4"
 serde_json = "1"
-# The stage draws with the engine's renderer. Both must be the wgpu iced
-# draws with (29 today); cargo unifies them, and a mismatch fails the
-# build rather than the picture.
-vello = "0.10"
-wgpu = { version = "29", default-features = false }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-env_logger = "0.11"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook = "0.1"
-console_log = "1"
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Location", "Response", "UrlSearchParams"] }
-
-[dev-dependencies]
-iced_test = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2" }
-tempfile = "3"
 
 [profile.release]
 opt-level = 3

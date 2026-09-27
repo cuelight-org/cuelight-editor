@@ -28,4 +28,4 @@ jobs:
         run: |
           sudo apt-get -qq update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev
-      - run: cargo test $CARGO_PATCH
+      - run: cargo test --workspace $CARGO_PATCH

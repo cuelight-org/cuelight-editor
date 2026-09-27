@@ -713,20 +713,30 @@ dependencies = [
  "console_error_panic_hook",
  "console_log",
  "cuelight",
- "cuelight-loader",
+ "cuelight-editor-core",
  "env_logger",
  "iced",
  "iced_test",
  "js-sys",
  "log",
  "rfd",
- "serde_json",
- "tempfile",
  "vello",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+]
+
+[[package]]
+name = "cuelight-editor-core"
+version = "0.0.1"
+dependencies = [
+ "cuelight",
+ "cuelight-loader",
+ "log",
+ "serde_json",
+ "tempfile",
+ "web-time",
 ]
 
 [[package]]

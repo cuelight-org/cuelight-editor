@@ -10,7 +10,7 @@ use std::sync::Arc;
 use cuelight::Engine;
 pub use cuelight_audio::Sound;
 use cuelight_core::{Layer, LayerKind, Show};
-use cuelight_loader::SoundFile;
+pub use cuelight_loader::SoundFile;
 
 /// What was opened, where from, and what it contained.
 pub struct Opened {
@@ -21,6 +21,9 @@ pub struct Opened {
     pub summary: Summary,
     /// The driver that came with the show, to play it by.
     pub driver: Option<cuelight_loader::Driver>,
+    /// The show's sound files as shipped, for a host whose browser decodes
+    /// them itself.
+    pub sound_files: Vec<SoundFile>,
     /// The show's sounds, decoded, for a host with a sound device. Their
     /// lengths are already registered with the engine.
     pub sounds: Vec<(String, Arc<Sound>)>,
@@ -105,6 +108,7 @@ impl Opened {
             engine,
             summary,
             driver: loaded.driver,
+            sound_files: loaded.sounds,
             sounds,
         })
     }
@@ -144,6 +148,7 @@ impl Opened {
             engine,
             summary,
             driver: loaded.driver,
+            sound_files: loaded.sounds,
             sounds,
         })
     }

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use cuelight_editor_core::assets::{Kind, Use};
 use cuelight_editor_core::opened::Opened;
 
 fn fixture() -> &'static Path {
@@ -25,17 +26,40 @@ fn a_folder_opens_with_its_assets_and_driver() {
 }
 
 #[test]
-fn a_pack_opens_to_the_same_summary() {
+fn a_folder_lists_its_assets_and_where_they_are_used() {
+    let opened = Opened::from_path(fixture()).unwrap();
+    assert_eq!(
+        opened.files.keys().collect::<Vec<_>>(),
+        ["assets/dot.png", "show.json", "test-driver.json"]
+    );
+    let [dot] = opened.library.as_slice() else {
+        panic!("one asset: {:?}", opened.library);
+    };
+    assert_eq!((dot.name.as_str(), dot.kind), ("dot", Kind::Image));
+    assert_eq!(dot.file.as_deref(), Some("assets/dot.png"));
+    assert_eq!(dot.size, Some([8.0, 8.0]));
+    assert_eq!(
+        dot.uses,
+        [Use {
+            place: "group/dot".to_owned(),
+            how: "image layer".to_owned()
+        }]
+    );
+}
+
+#[test]
+fn a_pack_opens_to_the_same_summary_and_library() {
     let dir = tempfile::tempdir().unwrap();
     let pack = dir.path().join("mini.cuelight");
     cuelight_loader::pack(fixture(), &pack).unwrap();
-    let from_folder = Opened::from_path(fixture()).unwrap().summary;
-    let from_path = Opened::from_path(&pack).unwrap().summary;
-    let from_bytes = Opened::from_bytes("mini.cuelight", &std::fs::read(&pack).unwrap())
-        .unwrap()
-        .summary;
-    assert_eq!(from_folder, from_path);
-    assert_eq!(from_folder, from_bytes);
+    let from_folder = Opened::from_path(fixture()).unwrap();
+    let from_path = Opened::from_path(&pack).unwrap();
+    let from_bytes = Opened::from_bytes("mini.cuelight", &std::fs::read(&pack).unwrap()).unwrap();
+    assert_eq!(from_folder.summary, from_path.summary);
+    assert_eq!(from_folder.summary, from_bytes.summary);
+    assert_eq!(from_folder.library, from_path.library);
+    assert_eq!(from_folder.library, from_bytes.library);
+    assert_eq!(from_folder.files, from_bytes.files);
 }
 
 #[test]

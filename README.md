@@ -60,6 +60,8 @@ Two crates in a workspace:
     wants.
   - `session.rs` plays a show: the engine, its driver and an anchored
     clock, as the players keep time.
+  - `assets.rs` lists the show's assets by kind, with their facts and
+    every place the show uses them.
 - `crates/cuelight-editor` is the window:
   - `stage.rs` draws the show: an iced shader widget in which the engine's
     presenter and vello render the frame into a texture, blitted into the

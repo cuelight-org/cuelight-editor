@@ -24,69 +24,40 @@ use cuelight_editor_core::opened::{self, Opened, Summary};
 use cuelight_editor_core::session::{Session, Step, What};
 
 /// What the command line asked for (desktop only).
-#[derive(Debug, Default, Clone, PartialEq)]
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(clap::Parser, Debug, Default, Clone, PartialEq)]
+#[command(name = "cuelight-editor", about = "Editor for cuelight shows", version)]
 pub struct Options {
-    /// A show to open at once.
+    /// A show to open at once: a folder, a packed show or a show.json.
     pub show: Option<std::path::PathBuf>,
-    /// Write the window to this PNG once the show is drawn, then exit:
-    /// how the editor is looked at without a screen, under a headless
-    /// compositor, and how a change is checked in CI.
-    pub screenshot: Option<std::path::PathBuf>,
     /// Zoom the stage to this scale once the show is open.
+    #[arg(long, value_name = "SCALE")]
     pub zoom: Option<f32>,
     /// Pick the layer under this canvas point once the show is open.
+    #[arg(long, value_name = "X,Y", value_parser = parse_point)]
     pub pick: Option<[f64; 2]>,
     /// Open no sound device.
+    #[arg(long)]
     pub silent: bool,
+    /// Write the window to this PNG once the show is drawn, then exit:
+    /// how the editor is looked at without a screen, and how a change
+    /// is checked in CI.
+    #[arg(long, value_name = "OUT.png")]
+    pub screenshot: Option<std::path::PathBuf>,
 }
 
-pub const USAGE: &str =
-    "usage: cuelight-editor [SHOW] [--zoom SCALE] [--pick X,Y] [--silent] [--screenshot OUT.png]";
-
-impl Options {
-    /// The options as the command line spells them.
-    pub fn from_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Self, String> {
-        let mut options = Self::default();
-        let mut args = args.into_iter();
-        while let Some(arg) = args.next() {
-            match arg.to_str() {
-                Some("--screenshot") => {
-                    options.screenshot =
-                        Some(args.next().ok_or("--screenshot needs a path")?.into());
-                }
-                Some("--silent") => options.silent = true,
-                Some("--pick") => {
-                    let at = args.next().ok_or("--pick needs a point: X,Y")?;
-                    let point: Option<Vec<f64>> = at
-                        .to_str()
-                        .map(|s| s.split(',').map(|n| n.trim().parse().ok()).collect())
-                        .and_then(|p: Option<Vec<f64>>| p);
-                    options.pick = match point.as_deref() {
-                        Some(&[x, y]) => Some([x, y]),
-                        _ => return Err(format!("--pick: not a point: {at:?}")),
-                    };
-                }
-                Some("--zoom") => {
-                    let scale = args.next().ok_or("--zoom needs a scale")?;
-                    options.zoom = Some(
-                        scale
-                            .to_str()
-                            .and_then(|s| s.parse().ok())
-                            .ok_or_else(|| format!("--zoom: not a number: {scale:?}"))?,
-                    );
-                }
-                Some(flag) if flag.starts_with("--") => {
-                    return Err(format!("unknown option {flag}"));
-                }
-                _ if options.show.is_none() => options.show = Some(arg.into()),
-                _ => return Err(format!("one show at a time: {arg:?}")),
-            }
-        }
-        Ok(options)
+/// A canvas point as the command line spells it: `X,Y`.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_point(text: &str) -> Result<[f64; 2], String> {
+    let point: Option<Vec<f64>> = text.split(',').map(|n| n.trim().parse().ok()).collect();
+    match point.as_deref() {
+        Some(&[x, y]) => Ok([x, y]),
+        _ => Err(format!("not a point: {text:?}")),
     }
 }
 
 /// The command line's options, set by `main` before the app starts.
+#[cfg(not(target_arch = "wasm32"))]
 pub static OPTIONS: std::sync::OnceLock<Options> = std::sync::OnceLock::new();
 
 pub struct App {
@@ -1620,6 +1591,35 @@ mod tests {
     use super::*;
     use cuelight_core::Value;
     use iced_test::simulator;
+
+    #[test]
+    fn the_command_line_is_read() {
+        use clap::Parser;
+        let options = Options::try_parse_from([
+            "cuelight-editor",
+            "deck",
+            "--zoom",
+            "2",
+            "--pick",
+            "10, 20",
+            "--silent",
+            "--screenshot",
+            "out.png",
+        ])
+        .unwrap();
+        assert_eq!(
+            options,
+            Options {
+                show: Some("deck".into()),
+                zoom: Some(2.0),
+                pick: Some([10.0, 20.0]),
+                silent: true,
+                screenshot: Some("out.png".into()),
+            }
+        );
+        assert!(Options::try_parse_from(["cuelight-editor", "--pick", "10"]).is_err());
+        assert!(Options::try_parse_from(["cuelight-editor", "--zoom", "big"]).is_err());
+    }
 
     #[test]
     fn starts_with_an_open_button_and_a_hint() {

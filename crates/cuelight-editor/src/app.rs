@@ -918,7 +918,7 @@ mod tests {
         let mut ui = simulator(app.view());
         assert!(ui.find("mini (format 1)").is_ok());
         assert!(ui.find("64 x 32").is_ok());
-        assert!(ui.find("Pause").is_ok(), "an opened show plays");
+        assert!(ui.find("Play").is_ok(), "an opened show stands at 0");
     }
 
     #[test]
@@ -1021,11 +1021,13 @@ mod tests {
             "/../cuelight-editor-core/tests/fixtures/mini"
         );
         let _ = app.update(Message::Dropped(dir.into()));
+        let _ = app.update(Message::TogglePause);
         let start = Instant::now();
         let _ = app.update(Message::Tick(start));
+        let from = app.session.as_ref().unwrap().time;
         let _ = app.update(Message::Tick(start + std::time::Duration::from_millis(500)));
         let time = app.session.as_ref().unwrap().time;
-        assert!((time - 0.5).abs() < 1e-9, "{time}");
+        assert!((time - from - 0.5).abs() < 1e-6, "{from} -> {time}");
         let _ = app.update(Message::TogglePause);
         let _ = app.update(Message::Tick(start + std::time::Duration::from_millis(900)));
         assert_eq!(
@@ -1127,17 +1129,17 @@ mod tests {
             keyboard::Modifiers::empty(),
         ));
         let session = app.session.as_ref().unwrap();
-        assert!(!session.paused);
+        assert!(session.paused, "the show still stands where it opened");
         assert!(
             matches!(session.happened.back().map(|h| &h.what), Some(What::Fired(t)) if t == "go")
         );
 
-        // With Ctrl, the editor's own Space pauses.
+        // With Ctrl, the editor's own Space plays.
         let _ = app.update(Message::KeyPressed(
             keyboard::Key::Named(keyboard::key::Named::Space),
             keyboard::Modifiers::CTRL,
         ));
-        assert!(app.session.as_ref().unwrap().paused);
+        assert!(!app.session.as_ref().unwrap().paused);
 
         // A press on the dot fires `go`; one on the floor fires nothing.
         let _ = app.update(Message::Press([32.0, 14.0]));

@@ -21,8 +21,65 @@ use crate::stage::Stage;
 use cuelight_editor_core::opened::{self, Opened, Summary};
 use cuelight_editor_core::session::{Session, Step, What};
 
+/// What the command line asked for (desktop only).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Options {
+    /// A show to open at once.
+    pub show: Option<std::path::PathBuf>,
+    /// Write the window to this PNG once the show is drawn, then exit:
+    /// how the editor is looked at without a screen, under a headless
+    /// compositor, and how a change is checked in CI.
+    pub screenshot: Option<std::path::PathBuf>,
+    /// Zoom the stage to this scale once the show is open.
+    pub zoom: Option<f32>,
+    /// Open no sound device.
+    pub silent: bool,
+}
+
+pub const USAGE: &str =
+    "usage: cuelight-editor [SHOW] [--zoom SCALE] [--silent] [--screenshot OUT.png]";
+
+impl Options {
+    /// The options as the command line spells them.
+    pub fn from_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Self, String> {
+        let mut options = Self::default();
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            match arg.to_str() {
+                Some("--screenshot") => {
+                    options.screenshot =
+                        Some(args.next().ok_or("--screenshot needs a path")?.into());
+                }
+                Some("--silent") => options.silent = true,
+                Some("--zoom") => {
+                    let scale = args.next().ok_or("--zoom needs a scale")?;
+                    options.zoom = Some(
+                        scale
+                            .to_str()
+                            .and_then(|s| s.parse().ok())
+                            .ok_or_else(|| format!("--zoom: not a number: {scale:?}"))?,
+                    );
+                }
+                Some(flag) if flag.starts_with("--") => {
+                    return Err(format!("unknown option {flag}"));
+                }
+                _ if options.show.is_none() => options.show = Some(arg.into()),
+                _ => return Err(format!("one show at a time: {arg:?}")),
+            }
+        }
+        Ok(options)
+    }
+}
+
+/// The command line's options, set by `main` before the app starts.
+pub static OPTIONS: std::sync::OnceLock<Options> = std::sync::OnceLock::new();
+
 pub struct App {
     session: Option<Session>,
+    /// A screenshot asked for on the command line, and the frames left
+    /// to draw before taking it: the stage needs a few to come up.
+    #[cfg(not(target_arch = "wasm32"))]
+    screenshot: Option<(std::path::PathBuf, u32)>,
     /// The sound device, opened for a show that has sounds (desktop only).
     #[cfg(not(target_arch = "wasm32"))]
     audio: Option<cuelight_audio::Output>,
@@ -142,6 +199,9 @@ pub enum Message {
     Resized(pane_grid::ResizeEvent),
     /// The window's scale factor, found or changed.
     Rescaled(f32),
+    /// The window as drawn, for `--screenshot`.
+    #[cfg(not(target_arch = "wasm32"))]
+    Shot(iced::window::Screenshot),
     /// The browser decoded the show's sounds: each name with its length,
     /// or why it did not decode.
     #[cfg(target_arch = "wasm32")]
@@ -152,6 +212,8 @@ impl App {
     pub fn new() -> (Self, Task<Message>) {
         let app = Self {
             session: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            screenshot: None,
             audio: None,
             source: String::new(),
             summary: Summary::default(),
@@ -179,11 +241,20 @@ impl App {
             scale_factor: 1.0,
             fitted: Cell::new(1.0),
         };
-        // A path on the command line opens at once (desktop only).
+        // A show on the command line opens at once (desktop only).
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(path) = std::env::args_os().nth(1) {
-            let path = std::path::PathBuf::from(path);
-            return (app, Task::done(Message::Dropped(path)));
+        {
+            let mut app = app;
+            let options = OPTIONS.get().cloned().unwrap_or_default();
+            app.screenshot = options.screenshot.map(|path| (path, 30));
+            if let Some(scale) = options.zoom {
+                app.zoom = Zoom::Scale(scale);
+            }
+            let open = match options.show {
+                Some(path) => Task::done(Message::Dropped(path)),
+                None => Task::none(),
+            };
+            (app, open)
         }
         // A page asked to open a show (`?show=<url>`) fetches it.
         #[cfg(target_arch = "wasm32")]
@@ -195,8 +266,6 @@ impl App {
                 Task::perform(dialog::fetch_show_from_query(), Message::Picked),
             )
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        (app, Task::none())
     }
 
     pub fn title(&self) -> String {
@@ -279,9 +348,20 @@ impl App {
                 Task::none()
             }
             Message::Tick(now) => {
-                if let Some(session) = &mut self.session {
+                if let Some(session) = &mut self.session
+                    && !session.paused
+                {
                     session.tick(now);
                     self.hear();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some((_, frames)) = &mut self.screenshot {
+                    *frames = frames.saturating_sub(1);
+                    if *frames == 0 {
+                        return iced::window::latest()
+                            .and_then(iced::window::screenshot)
+                            .map(Message::Shot);
+                    }
                 }
                 Task::none()
             }
@@ -400,6 +480,17 @@ impl App {
                 self.scale_factor = factor;
                 Task::none()
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::Shot(shot) => {
+                let Some((path, _)) = self.screenshot.take() else {
+                    return Task::none();
+                };
+                match write_png(&path, &shot) {
+                    Ok(()) => log::info!("screenshot: {}", path.display()),
+                    Err(error) => log::error!("screenshot {}: {error}", path.display()),
+                }
+                iced::exit()
+            }
             Message::Tab(tab) => {
                 self.tab = tab;
                 Task::none()
@@ -493,7 +584,7 @@ impl App {
         sounds: &[(String, std::sync::Arc<cuelight_editor_core::opened::Sound>)],
         _files: Vec<cuelight_editor_core::opened::SoundFile>,
     ) -> Task<Message> {
-        if sounds.is_empty() {
+        if sounds.is_empty() || OPTIONS.get().is_some_and(|o| o.silent) {
             return Task::none();
         }
         if self.audio.is_none() {
@@ -598,7 +689,11 @@ impl App {
             _ => None,
         });
         let mut subscriptions = vec![keys, rescaled];
-        if self.session.as_ref().is_some_and(|s| !s.paused) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let waiting_to_shoot = self.session.is_some() && self.screenshot.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let waiting_to_shoot = false;
+        if self.session.as_ref().is_some_and(|s| !s.paused) || waiting_to_shoot {
             subscriptions.push(iced::window::frames().map(Message::Tick));
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -746,11 +841,11 @@ impl App {
         })
         .width(w)
         .height(h);
-        // Centred in the room it has; past that, scrolled.
-        let left = ((room.width - w) / 2.0).max(0.0) + MARGIN;
-        let top = ((room.height - h) / 2.0).max(0.0) + MARGIN;
-        let placed = container(stage).padding([top, left]);
-        let scrolled = scrollable(placed)
+        // The scroll pane holds the show and nothing else, so its bars
+        // stand for the show: it shrinks to the show while that fits,
+        // centred in the room with the margin outside it, and past that
+        // fills the room and scrolls.
+        let scrolled = scrollable(stage)
             .direction(Direction::Both {
                 vertical: Scrollbar::default(),
                 horizontal: Scrollbar::default(),
@@ -761,13 +856,14 @@ impl App {
                 let mut style = scrollable::default(theme, status);
                 style.gap = Some(theme.palette().background.weak.color.into());
                 style
-            })
-            .width(Fill)
-            .height(Fill);
-        column![container(bar).padding([4, 8]).height(BAR), scrolled]
-            .width(Fill)
-            .height(Fill)
-            .into()
+            });
+        column![
+            container(bar).padding([4, 8]).height(BAR),
+            container(scrolled).padding(MARGIN).center(Fill)
+        ]
+        .width(Fill)
+        .height(Fill)
+        .into()
     }
 
     /// The show's inputs: triggers as buttons, variables as fields, the
@@ -1015,6 +1111,23 @@ fn kind_mark(kind: Kind) -> &'static str {
         Kind::Sound => "))",
         Kind::Video => ">",
     }
+}
+
+/// The window's pixels as a PNG.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_png(path: &std::path::Path, shot: &iced::window::Screenshot) -> std::io::Result<()> {
+    let file = std::fs::File::create(path)?;
+    let mut encoder = png::Encoder::new(
+        std::io::BufWriter::new(file),
+        shot.size.width,
+        shot.size.height,
+    );
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(&shot.rgba)?;
+    writer.finish()?;
+    Ok(())
 }
 
 /// A key's name as a browser gives it, which is how a show names one.

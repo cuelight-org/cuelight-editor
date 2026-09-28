@@ -2,7 +2,19 @@ use cuelight_editor::app::App;
 
 pub fn main() -> iced::Result {
     #[cfg(not(target_arch = "wasm32"))]
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+        let options = cuelight_editor::app::Options::from_args(std::env::args_os().skip(1));
+        let options = match options {
+            Ok(options) => options,
+            Err(message) => {
+                eprintln!("{message}");
+                eprintln!("{}", cuelight_editor::app::USAGE);
+                std::process::exit(2);
+            }
+        };
+        let _ = cuelight_editor::app::OPTIONS.set(options);
+    }
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();

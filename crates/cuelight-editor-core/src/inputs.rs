@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use cuelight_core::{DigitDisplay, Layer, LayerKind, Show, Value};
+use cuelight_core::{Layer, LayerKind, Show, Value};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Inputs {
@@ -63,76 +63,21 @@ impl Inputs {
     }
 }
 
-/// Where each trigger is heard: a scene it opens comes first, then the
-/// show's own layers or several scenes count as anywhere, then the one
-/// scene that hears it. A trigger nothing listens to (a key that fires
-/// into the void) counts as anywhere too.
+/// Where each trigger is heard, as the show says it.
 fn places(show: &Show, triggers: &BTreeSet<String>) -> BTreeMap<String, Place> {
-    let mut heard: BTreeMap<String, BTreeSet<Option<String>>> = BTreeMap::new();
-    let mut own = BTreeSet::new();
-    listened(&show.layers, &mut own);
-    for trigger in own {
-        heard.entry(trigger).or_default().insert(None);
-    }
-    for scene in &show.scenes {
-        let mut here = BTreeSet::new();
-        listened(&scene.layers, &mut here);
-        for trigger in here {
-            heard
-                .entry(trigger)
-                .or_default()
-                .insert(Some(scene.name.clone()));
-        }
-    }
-    let mut out = BTreeMap::new();
-    for scene in &show.scenes {
-        for trigger in scene.trigger.iter() {
-            out.insert(trigger.to_owned(), Place::Opens(scene.name.clone()));
-        }
-    }
-    for trigger in triggers {
-        if out.contains_key(trigger) {
-            continue;
-        }
-        let place = match heard.get(trigger) {
-            Some(where_) if where_.len() == 1 => match where_.iter().next().unwrap() {
-                Some(scene) => Place::Scene(scene.clone()),
-                None => Place::Anywhere,
-            },
-            _ => Place::Anywhere,
-        };
-        out.insert(trigger.clone(), place);
-    }
-    out
-}
-
-/// The triggers a layer tree listens to: its timelines, its media's
-/// play and stop, its reels' spin.
-fn listened(layers: &[Layer], out: &mut BTreeSet<String>) {
-    for layer in layers {
-        for timeline in &layer.timelines {
-            out.extend(timeline.trigger.iter().map(str::to_owned));
-        }
-        if let Some(media) = layer.kind.media() {
-            out.extend(
-                media
-                    .trigger
-                    .iter()
-                    .chain(media.stop.iter())
-                    .map(str::to_owned),
-            );
-        }
-        if let LayerKind::Digits {
-            display: DigitDisplay::Reel(reel),
-            ..
-        } = &layer.kind
-        {
-            out.extend(reel.spin.iter().map(str::to_owned));
-        }
-        if let LayerKind::Group { children, .. } = &layer.kind {
-            listened(children, out);
-        }
-    }
+    use cuelight_core::Listened;
+    let listened = show.listeners();
+    triggers
+        .iter()
+        .map(|trigger| {
+            let place = match listened.get(trigger) {
+                Some(Listened::Opens(scene)) => Place::Opens(scene.clone()),
+                Some(Listened::Scene(scene)) => Place::Scene(scene.clone()),
+                Some(Listened::Anywhere) | None => Place::Anywhere,
+            };
+            (trigger.clone(), place)
+        })
+        .collect()
 }
 
 fn presses(layers: &[Layer], out: &mut Vec<(String, String)>) {

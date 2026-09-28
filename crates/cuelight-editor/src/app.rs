@@ -804,6 +804,11 @@ impl App {
     fn stage<'a>(&'a self, session: &'a Session, size: Size) -> Element<'a, Message> {
         const BAR: f32 = 36.0;
         const MARGIN: f32 = 8.0;
+        /// What a scrollbar covers: iced floats its bars over the content
+        /// (the bars that take their own space only work for one
+        /// direction), so the show gets that much room past its far edge
+        /// on an axis it overflows, and the bar covers room, not show.
+        const SCROLLBAR: f32 = 10.0;
         let [show_w, show_h] = self.summary.size.map(|n| n.max(1) as f32);
         let room = Size::new(
             (size.width - 2.0 * MARGIN).max(1.0),
@@ -816,6 +821,19 @@ impl App {
             Zoom::Scale(scale) => scale,
         };
         let (w, h) = ((show_w * scale).round(), (show_h * scale).round());
+        // A bar on one axis takes room from the other, which may then
+        // overflow too.
+        let (mut sideways, mut downwards) = (false, false);
+        for _ in 0..2 {
+            sideways = w + if downwards { SCROLLBAR } else { 0.0 } > room.width;
+            downwards = h + if sideways { SCROLLBAR } else { 0.0 } > room.height;
+        }
+        let past = iced::Padding {
+            top: 0.0,
+            right: if downwards { SCROLLBAR } else { 0.0 },
+            bottom: if sideways { SCROLLBAR } else { 0.0 },
+            left: 0.0,
+        };
 
         let zoom_button = |label: &'a str, zoom: Zoom| {
             let mut b = button(text(label).size(13)).on_press(Message::Zoom(zoom));
@@ -845,7 +863,7 @@ impl App {
         // stand for the show: it shrinks to the show while that fits,
         // centred in the room with the margin outside it, and past that
         // fills the room and scrolls.
-        let scrolled = scrollable(stage)
+        let scrolled = scrollable(container(stage).padding(past))
             .direction(Direction::Both {
                 vertical: Scrollbar::default(),
                 horizontal: Scrollbar::default(),

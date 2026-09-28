@@ -4,9 +4,11 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
+use cuelight_core::{Influence, LayerPath, Property, TimelineOwner, Value};
 use cuelight_editor_core::assets::{Asset, Kind};
 use cuelight_editor_core::inputs::{self, Inputs, Place};
 use cuelight_editor_core::session::Instant;
+use cuelight_editor_core::tree::{self, Row};
 use iced::keyboard;
 use iced::widget::pane_grid::{self, Axis, Configuration};
 use iced::widget::scrollable::{Direction, Scrollbar};
@@ -17,7 +19,7 @@ use iced::widget::{
 use iced::{ContentFit, Element, Fill, Size, Subscription, Task, Theme};
 
 use crate::dialog::{self, Picked};
-use crate::stage::Stage;
+use crate::stage::{Pick, Stage};
 use cuelight_editor_core::opened::{self, Opened, Summary};
 use cuelight_editor_core::session::{Session, Step, What};
 
@@ -32,12 +34,14 @@ pub struct Options {
     pub screenshot: Option<std::path::PathBuf>,
     /// Zoom the stage to this scale once the show is open.
     pub zoom: Option<f32>,
+    /// Pick the layer under this canvas point once the show is open.
+    pub pick: Option<[f64; 2]>,
     /// Open no sound device.
     pub silent: bool,
 }
 
 pub const USAGE: &str =
-    "usage: cuelight-editor [SHOW] [--zoom SCALE] [--silent] [--screenshot OUT.png]";
+    "usage: cuelight-editor [SHOW] [--zoom SCALE] [--pick X,Y] [--silent] [--screenshot OUT.png]";
 
 impl Options {
     /// The options as the command line spells them.
@@ -51,6 +55,17 @@ impl Options {
                         Some(args.next().ok_or("--screenshot needs a path")?.into());
                 }
                 Some("--silent") => options.silent = true,
+                Some("--pick") => {
+                    let at = args.next().ok_or("--pick needs a point: X,Y")?;
+                    let point: Option<Vec<f64>> = at
+                        .to_str()
+                        .map(|s| s.split(',').map(|n| n.trim().parse().ok()).collect())
+                        .and_then(|p: Option<Vec<f64>>| p);
+                    options.pick = match point.as_deref() {
+                        Some(&[x, y]) => Some([x, y]),
+                        _ => return Err(format!("--pick: not a point: {at:?}")),
+                    };
+                }
                 Some("--zoom") => {
                     let scale = args.next().ok_or("--zoom needs a scale")?;
                     options.zoom = Some(
@@ -98,6 +113,13 @@ pub struct App {
     selected: Option<usize>,
     /// What the library area shows.
     tab: Tab,
+    /// The tree's rows, as the open show has them.
+    rows: Vec<Row>,
+    /// The layers picked, in the order they were; the last is what the
+    /// inspector shows.
+    selection: Vec<LayerPath>,
+    /// The inspector row unfolded to list every source of its value.
+    expanded: Option<Property>,
     /// What the show can be told.
     inputs: Inputs,
     /// Variable fields being typed into, before they are submitted.
@@ -124,15 +146,16 @@ pub struct App {
 /// An area of the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
+    Library,
     Inputs,
     Stage,
-    Library,
+    Inspector,
 }
 
-/// What the library area shows: the show's facts, or its assets.
+/// What the library area shows: the show's layers, or its assets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    Show,
+    Layers,
     Assets,
 }
 
@@ -195,6 +218,14 @@ pub enum Message {
     Tab(Tab),
     /// An asset picked in the library, or the pick cleared.
     Select(Option<usize>),
+    /// A click on the stage at a canvas point: pick the layer there.
+    Pick([f64; 2], Pick),
+    /// A layer picked in the tree.
+    Choose(LayerPath),
+    /// The selection cleared.
+    Deselect,
+    /// An inspector row unfolded, or all folded.
+    Expand(Option<Property>),
     /// A split between two areas dragged.
     Resized(pane_grid::ResizeEvent),
     /// The window's scale factor, found or changed.
@@ -220,7 +251,10 @@ impl App {
             library: Vec::new(),
             thumbs: Vec::new(),
             selected: None,
-            tab: Tab::Show,
+            tab: Tab::Layers,
+            rows: Vec::new(),
+            selection: Vec::new(),
+            expanded: None,
             inputs: Inputs::default(),
             edits: BTreeMap::new(),
             fields: BTreeMap::new(),
@@ -229,12 +263,17 @@ impl App {
             panes: pane_grid::State::with_configuration(Configuration::Split {
                 axis: Axis::Vertical,
                 ratio: 0.24,
-                a: Box::new(Configuration::Pane(Pane::Inputs)),
+                a: Box::new(Configuration::Split {
+                    axis: Axis::Horizontal,
+                    ratio: 0.55,
+                    a: Box::new(Configuration::Pane(Pane::Library)),
+                    b: Box::new(Configuration::Pane(Pane::Inputs)),
+                }),
                 b: Box::new(Configuration::Split {
                     axis: Axis::Vertical,
                     ratio: 0.7,
                     a: Box::new(Configuration::Pane(Pane::Stage)),
-                    b: Box::new(Configuration::Pane(Pane::Library)),
+                    b: Box::new(Configuration::Pane(Pane::Inspector)),
                 }),
             }),
             zoom: Zoom::Fit,
@@ -254,7 +293,11 @@ impl App {
                 Some(path) => Task::done(Message::Dropped(path)),
                 None => Task::none(),
             };
-            (app, open)
+            let pick = match options.pick {
+                Some(point) => Task::done(Message::Pick(point, Pick::default())),
+                None => Task::none(),
+            };
+            (app, open.chain(pick))
         }
         // A page asked to open a show (`?show=<url>`) fetches it.
         #[cfg(target_arch = "wasm32")]
@@ -394,6 +437,7 @@ impl App {
                     return Task::none();
                 }
                 match name.as_str() {
+                    "Escape" => self.update(Message::Deselect),
                     " " => self.update(Message::TogglePause),
                     "r" => self.update(Message::Restart),
                     "f" | "F" => self.update(Message::Zoom(Zoom::Fit)),
@@ -499,10 +543,67 @@ impl App {
                 self.selected = index.filter(|i| *i < self.library.len());
                 Task::none()
             }
+            Message::Pick(point, pick) => {
+                let Some(session) = &self.session else {
+                    return Task::none();
+                };
+                let under = session
+                    .engine
+                    .lock()
+                    .expect("the engine is not poisoned")
+                    .layers_at(point);
+                self.pick(under, pick);
+                Task::none()
+            }
+            Message::Choose(path) => {
+                self.selection = vec![path];
+                self.expanded = None;
+                Task::none()
+            }
+            Message::Deselect => {
+                self.selection.clear();
+                self.expanded = None;
+                Task::none()
+            }
+            Message::Expand(property) => {
+                self.expanded = property;
+                Task::none()
+            }
             Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
                 self.panes.resize(split, ratio);
                 Task::none()
             }
+        }
+    }
+
+    /// What a click on the stage does to the selection, given the layers
+    /// under it, topmost first: a plain click takes the topmost, Alt the
+    /// next one down from the one picked last, Shift adds or removes
+    /// rather than replaces; a click on nothing clears.
+    fn pick(&mut self, under: Vec<LayerPath>, pick: Pick) {
+        self.expanded = None;
+        let Some(first) = under.first() else {
+            if !pick.shift {
+                self.selection.clear();
+            }
+            return;
+        };
+        let chosen = if pick.alt {
+            let last = self.selection.last();
+            let at = last.and_then(|last| under.iter().position(|p| p == last));
+            at.map_or(first, |i| &under[(i + 1) % under.len()])
+        } else {
+            first
+        };
+        if pick.shift {
+            match self.selection.iter().position(|p| p == chosen) {
+                Some(i) => {
+                    self.selection.remove(i);
+                }
+                None => self.selection.push(chosen.clone()),
+            }
+        } else {
+            self.selection = vec![chosen.clone()];
         }
     }
 
@@ -557,6 +658,9 @@ impl App {
                 self.thumbs = thumbs(&engine, &library);
                 self.library = library;
                 self.selected = None;
+                self.rows = engine.show().map(tree::rows).unwrap_or_default();
+                self.selection.clear();
+                self.expanded = None;
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
                 self.edits.clear();
                 let task = self.listen(&sounds, sound_files);
@@ -780,6 +884,10 @@ impl App {
                     ),
                     Pane::Stage => responsive(move |size| self.stage(session, size)).into(),
                     Pane::Library => self.library_panel(session),
+                    Pane::Inspector => scrollable(self.inspector_panel(session))
+                        .width(Fill)
+                        .height(Fill)
+                        .into(),
                 })
             })
             .on_resize(8, Message::Resized)
@@ -837,6 +945,8 @@ impl App {
         let stage = shader(Stage {
             engine: session.engine.clone(),
             revision: session.revision,
+            selection: self.selection.clone(),
+            on_pick: Message::Pick,
             on_press: Message::Press,
         })
         .width(w)
@@ -964,7 +1074,7 @@ impl App {
 }
 
 impl App {
-    /// The library area: a tab row over the show's facts or its assets.
+    /// The library area: a tab row over the show's layers or its assets.
     fn library_panel<'a>(&'a self, session: &'a Session) -> Element<'a, Message> {
         let tab = |label: &'a str, tab: Tab| {
             let mut b = button(text(label).size(13)).on_press(Message::Tab(tab));
@@ -973,9 +1083,9 @@ impl App {
             }
             b
         };
-        let tabs = row![tab("Show", Tab::Show), tab("Assets", Tab::Assets)].spacing(6);
+        let tabs = row![tab("Layers", Tab::Layers), tab("Assets", Tab::Assets)].spacing(6);
         let body = match self.tab {
-            Tab::Show => summary(&self.summary),
+            Tab::Layers => self.tree_panel(session),
             Tab::Assets => self.assets_panel(session),
         };
         column![
@@ -987,6 +1097,298 @@ impl App {
         .into()
     }
 
+    /// The layers as a tree: the show's own, then each scene's, groups'
+    /// children indented under them; the picked ones marked, the active
+    /// scene starred.
+    fn tree_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
+        let mut panel = Column::new().spacing(2).padding(12);
+        let active = session.active_scene();
+        for row_ in &self.rows {
+            match row_ {
+                Row::Root { root, name } => {
+                    let heading = match root {
+                        cuelight_core::Root::Show => "SHOW".to_owned(),
+                        cuelight_core::Root::Scene(_) if active.as_deref() == Some(name) => {
+                            format!("SCENE {name} *")
+                        }
+                        cuelight_core::Root::Scene(_) => format!("SCENE {name}"),
+                    };
+                    panel = panel.push(container(text(heading).size(12)).padding([6, 0]));
+                }
+                Row::Layer {
+                    path,
+                    name,
+                    kind,
+                    depth,
+                } => {
+                    let line = row![
+                        space::horizontal().width(*depth as f32 * 14.0),
+                        text(*kind).size(11).width(44),
+                        text(name).size(14),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Center);
+                    let mut b = button(line)
+                        .on_press(Message::Choose(path.clone()))
+                        .width(Fill)
+                        .padding([2, 6])
+                        .style(button::text);
+                    if self.selection.contains(path) {
+                        b = b.style(button::secondary);
+                    }
+                    panel = panel.push(b);
+                }
+            }
+        }
+        panel
+    }
+
+    /// The inspector: the picked layer's properties with their live
+    /// values and where each comes from, its bindings and timelines, and
+    /// its JSON; the show's own facts while nothing is picked.
+    fn inspector_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
+        let Some(path) = self.selection.last() else {
+            return summary(&self.summary);
+        };
+        let engine = session.engine.lock().expect("the engine is not poisoned");
+        let Some(show) = engine.show() else {
+            return summary(&self.summary);
+        };
+        let Some(layer) = tree::layer(show, path) else {
+            return Column::new().push(text("the picked layer is gone").size(14));
+        };
+        let mut panel = Column::new().spacing(4).padding(12);
+        panel = panel.push(text(layer.name.clone()).size(16));
+        panel = panel.push(
+            text(format!(
+                "{}, {}",
+                tree::kind_name(&layer.kind),
+                tree::describe(show, path)
+            ))
+            .size(12),
+        );
+        if self.selection.len() > 1 {
+            panel = panel.push(text(format!("{} picked", self.selection.len())).size(12));
+        }
+
+        // Every property the layer has, its value now, and its sources.
+        let live: Vec<(Property, Value)> = engine
+            .values()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|v| v.layer == *path)
+            .map(|v| (v.property, v.value))
+            .collect();
+        let mut owned = Vec::new();
+        let mut heading = "";
+        for property in tree::PROPERTIES {
+            let sources = engine.explain(path, property);
+            if sources.is_empty() {
+                continue;
+            }
+            let group = match property {
+                Property::X
+                | Property::Y
+                | Property::Rotation
+                | Property::Scale
+                | Property::ScaleX
+                | Property::ScaleY => "PLACEMENT",
+                _ => "APPEARANCE",
+            };
+            if group != heading {
+                heading = group;
+                panel = panel.push(container(text(group).size(12)).padding([6, 0]));
+            }
+            let value = live
+                .iter()
+                .find(|(p, _)| *p == property)
+                .map(|(_, v)| inputs::show_value(v))
+                .or_else(|| sources.iter().find_map(influence_value))
+                .unwrap_or_default();
+            let badge = sources.first().map(winner).unwrap_or_default();
+            for source in &sources {
+                if let Influence::Timeline {
+                    timeline,
+                    held,
+                    local,
+                    ..
+                } = source
+                    && let TimelineOwner::Layer(owner) = &timeline.owner
+                    && owner == path
+                {
+                    owned.push((timeline.index, *held, *local));
+                }
+            }
+            let unfolded = self.expanded == Some(property);
+            let line = row![
+                text(tree::property_name(property)).size(13).width(80),
+                text(value).size(13).width(Fill),
+                text(badge).size(12),
+            ]
+            .spacing(8)
+            .align_y(iced::Center);
+            let mut b = button(line)
+                .on_press(Message::Expand((!unfolded).then_some(property)))
+                .width(Fill)
+                .padding([2, 6])
+                .style(button::text);
+            if unfolded {
+                b = b.style(button::secondary);
+            }
+            panel = panel.push(b);
+            if unfolded {
+                for (rank, source) in sources.iter().enumerate() {
+                    panel = panel.push(
+                        container(
+                            text(format!("{}. {}", rank + 1, describe_source(source))).size(12),
+                        )
+                        .padding([0, 18]),
+                    );
+                }
+            }
+        }
+
+        if !layer.bindings.is_empty() {
+            panel = panel.push(container(text("BINDINGS").size(12)).padding([6, 0]));
+            for binding in &layer.bindings {
+                let mut line = format!(
+                    "{} <- {}",
+                    tree::property_name(binding.property),
+                    binding.reading.variable
+                );
+                if binding.reading.map.is_some() {
+                    line.push_str(", mapped");
+                }
+                if let Some(threshold) = binding.reading.threshold {
+                    line.push_str(&format!(", from {threshold}"));
+                }
+                if let Some(debounce) = binding.reading.debounce {
+                    line.push_str(&format!(", settled {debounce} s"));
+                }
+                if binding.scale != 1.0 {
+                    line.push_str(&format!(", x {}", binding.scale));
+                }
+                if binding.offset != 0.0 {
+                    line.push_str(&format!(", + {}", binding.offset));
+                }
+                if let Some(transition) = &binding.transition {
+                    line.push_str(&format!(", over {} s", transition.duration));
+                }
+                panel = panel.push(text(line).size(13));
+            }
+        }
+
+        if !layer.timelines.is_empty() {
+            panel = panel.push(container(text("TIMELINES").size(12)).padding([6, 0]));
+            for (index, timeline) in layer.timelines.iter().enumerate() {
+                let mut starts: Vec<String> =
+                    timeline.trigger.iter().map(|t| format!("on {t}")).collect();
+                if let Some(when) = &timeline.when {
+                    starts.push(format!("when {}", when.variable));
+                }
+                if let Some(whilst) = &timeline.whilst {
+                    starts.push(format!("while {}", whilst.variable));
+                }
+                if timeline.autoplay {
+                    starts.push("at load".to_owned());
+                }
+                let tracks: Vec<String> = timeline
+                    .tracks
+                    .iter()
+                    .map(|t| tree::property_name(t.property))
+                    .collect();
+                let state = owned
+                    .iter()
+                    .find(|(i, _, _)| *i == index)
+                    .map(|(_, held, local)| match (held, local) {
+                        (true, _) => "held".to_owned(),
+                        (false, Some(at)) => format!("running, {at:.2} s"),
+                        (false, None) => "running".to_owned(),
+                    })
+                    .unwrap_or_default();
+                panel = panel.push(
+                    row![
+                        text(timeline.name.clone()).size(13).width(Fill),
+                        text(state).size(12)
+                    ]
+                    .spacing(8),
+                );
+                panel = panel.push(
+                    container(
+                        text(format!(
+                            "{}{}: {}",
+                            starts.join(", "),
+                            if timeline.looping { ", looping" } else { "" },
+                            tracks.join(", ")
+                        ))
+                        .size(12),
+                    )
+                    .padding([0, 12]),
+                );
+            }
+        }
+
+        panel = panel.push(container(text("JSON").size(12)).padding([6, 0]));
+        let json = serde_json::to_string_pretty(layer).unwrap_or_default();
+        panel = panel.push(text(json).size(12).font(iced::Font::new("DM Mono")));
+        panel
+    }
+}
+
+/// What an influence hands the property, as text.
+fn influence_value(influence: &Influence) -> Option<String> {
+    match influence {
+        Influence::Base { value } => Some(inputs::show_value(value)),
+        Influence::Binding { value, .. } => value.as_ref().map(inputs::show_value),
+        Influence::Timeline { value, .. } => value.map(|v| inputs::show_value(&Value::Number(v))),
+        _ => None,
+    }
+}
+
+/// The badge of the source that wins right now.
+fn winner(influence: &Influence) -> String {
+    match influence {
+        Influence::Base { .. } => "base".to_owned(),
+        Influence::Binding { variable, .. } => format!("bound to {variable}"),
+        Influence::Timeline { timeline, held, .. } => {
+            if *held {
+                format!("held by {}", timeline.name)
+            } else {
+                format!("timeline {}", timeline.name)
+            }
+        }
+        _ => "?".to_owned(),
+    }
+}
+
+/// One source of a property's value, in the unfolded list.
+fn describe_source(influence: &Influence) -> String {
+    let value = influence_value(influence)
+        .map(|v| format!(" = {v}"))
+        .unwrap_or_default();
+    match influence {
+        Influence::Base { .. } => format!("base{value}"),
+        Influence::Binding {
+            index, variable, ..
+        } => format!("binding {} on {variable}{value}", index + 1),
+        Influence::Timeline {
+            timeline,
+            local,
+            held,
+            ..
+        } => {
+            let at = match (held, local) {
+                (true, _) => ", held".to_owned(),
+                (false, Some(t)) => format!(" at {t:.2} s"),
+                (false, None) => String::new(),
+            };
+            format!("timeline {}{at}{value}", timeline.name)
+        }
+        _ => format!("another source{value}"),
+    }
+}
+
+impl App {
     /// The assets by kind, each with its thumbnail and facts; the picked
     /// one's file and every place the show uses it right under it.
     fn assets_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
@@ -1338,11 +1740,80 @@ mod tests {
         assert!(ui.find("assets/dot.png").is_ok(), "the file");
         assert!(ui.find("group/dot").is_ok(), "the layer that uses it");
         assert!(ui.find("image layer").is_ok());
-        let _ = ui.click("Show");
+        let _ = ui.click("Layers");
         for message in ui.into_messages() {
             let _ = app.update(message);
         }
-        assert_eq!(app.tab, Tab::Show);
+        assert_eq!(app.tab, Tab::Layers);
+    }
+
+    #[test]
+    fn clicking_the_stage_picks_the_layer_that_drew_it() {
+        use cuelight_core::Root;
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        let dot = LayerPath::new(Root::Show, [1, 0]);
+        let floor = LayerPath::new(Root::Show, [0]);
+        // The dot is drawn at the group's place; the floor along the bottom.
+        let _ = app.update(Message::Pick([32.0, 14.0], Pick::default()));
+        assert_eq!(app.selection, std::slice::from_ref(&dot));
+        let _ = app.update(Message::Pick([10.0, 27.0], Pick::default()));
+        assert_eq!(app.selection, std::slice::from_ref(&floor));
+        // Shift adds; a click on nothing clears; Escape clears.
+        let _ = app.update(Message::Pick(
+            [32.0, 14.0],
+            Pick {
+                alt: false,
+                shift: true,
+            },
+        ));
+        assert_eq!(app.selection, [floor.clone(), dot.clone()]);
+        let _ = app.update(Message::Pick([1.0, 1.0], Pick::default()));
+        assert!(app.selection.is_empty());
+        let _ = app.update(Message::Choose(dot.clone()));
+        let _ = app.update(Message::KeyPressed(
+            keyboard::Key::Named(keyboard::key::Named::Escape),
+            keyboard::Modifiers::empty(),
+        ));
+        assert!(app.selection.is_empty());
+        // The tree shows both, and picking there works too.
+        let mut ui = simulator(app.view());
+        assert!(ui.find("SHOW").is_ok());
+        assert!(ui.find("dot").is_ok());
+        assert!(ui.find("group").is_ok());
+    }
+
+    #[test]
+    fn the_inspector_says_where_a_value_comes_from() {
+        use cuelight_core::Root;
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        let _ = app.update(Message::Choose(LayerPath::new(Root::Show, [1, 0])));
+        {
+            let mut ui = simulator(app.view());
+            assert!(ui.find("PLACEMENT").is_ok());
+            assert!(ui.find("bound to lit").is_ok(), "opacity is bound");
+            assert!(ui.find("image, group/dot").is_ok());
+            assert!(ui.find("hop").is_ok(), "the timeline is listed");
+        }
+        // Once `go` starts the hop, y is the timeline's.
+        let _ = app.update(Message::Fire("go".to_owned()));
+        let _ = app.update(Message::TogglePause);
+        let start = Instant::now();
+        let _ = app.update(Message::Tick(start));
+        let _ = app.update(Message::Tick(start + std::time::Duration::from_millis(100)));
+        let _ = app.update(Message::Expand(Some(Property::Y)));
+        let mut ui = simulator(app.view());
+        assert!(ui.find("timeline hop").is_ok(), "y is owned by the hop");
+        assert!(ui.find("2. base = 0").is_ok(), "the base value is last");
     }
 
     #[test]

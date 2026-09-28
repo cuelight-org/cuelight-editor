@@ -6,3 +6,4 @@ pub mod assets;
 pub mod inputs;
 pub mod opened;
 pub mod session;
+pub mod tree;

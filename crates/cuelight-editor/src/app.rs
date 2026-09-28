@@ -4,16 +4,17 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
+use cuelight_editor_core::assets::{Asset, Kind};
 use cuelight_editor_core::inputs::{self, Inputs, Place};
 use cuelight_editor_core::session::Instant;
 use iced::keyboard;
 use iced::widget::pane_grid::{self, Axis, Configuration};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
-    Column, button, center, column, container, responsive, row, scrollable, shader, slider, space,
-    text, text_input, toggler,
+    Column, button, center, column, container, image, responsive, row, scrollable, shader, slider,
+    space, svg, text, text_input, toggler,
 };
-use iced::{Element, Fill, Size, Subscription, Task, Theme};
+use iced::{ContentFit, Element, Fill, Size, Subscription, Task, Theme};
 
 use crate::dialog::{self, Picked};
 use crate::stage::Stage;
@@ -33,6 +34,13 @@ pub struct App {
     /// Where the open show came from, and what it holds.
     source: String,
     summary: Summary,
+    /// The show's assets, and a thumbnail for each piece of artwork.
+    library: Vec<Asset>,
+    thumbs: Vec<Option<Thumb>>,
+    /// Which asset the library shows the facts of.
+    selected: Option<usize>,
+    /// What the library area shows.
+    tab: Tab,
     /// What the show can be told.
     inputs: Inputs,
     /// Variable fields being typed into, before they are submitted.
@@ -61,7 +69,21 @@ pub struct App {
 pub enum Pane {
     Inputs,
     Stage,
-    Summary,
+    Library,
+}
+
+/// What the library area shows: the show's facts, or its assets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Show,
+    Assets,
+}
+
+/// A thumbnail of a piece of artwork: an image's own pixels, or an
+/// SVG's bytes for iced to draw.
+enum Thumb {
+    Image(image::Handle),
+    Svg(svg::Handle),
 }
 
 /// The stage's magnification.
@@ -112,6 +134,10 @@ pub enum Message {
     Zoom(Zoom),
     /// Zoom in (above 1) or out (below 1) from the scale shown now.
     ZoomBy(f32),
+    /// The library area switched to a tab.
+    Tab(Tab),
+    /// An asset picked in the library, or the pick cleared.
+    Select(Option<usize>),
     /// A split between two areas dragged.
     Resized(pane_grid::ResizeEvent),
     /// The window's scale factor, found or changed.
@@ -129,6 +155,10 @@ impl App {
             audio: None,
             source: String::new(),
             summary: Summary::default(),
+            library: Vec::new(),
+            thumbs: Vec::new(),
+            selected: None,
+            tab: Tab::Show,
             inputs: Inputs::default(),
             edits: BTreeMap::new(),
             fields: BTreeMap::new(),
@@ -142,7 +172,7 @@ impl App {
                     axis: Axis::Vertical,
                     ratio: 0.7,
                     a: Box::new(Configuration::Pane(Pane::Stage)),
-                    b: Box::new(Configuration::Pane(Pane::Summary)),
+                    b: Box::new(Configuration::Pane(Pane::Library)),
                 }),
             }),
             zoom: Zoom::Fit,
@@ -370,6 +400,14 @@ impl App {
                 self.scale_factor = factor;
                 Task::none()
             }
+            Message::Tab(tab) => {
+                self.tab = tab;
+                Task::none()
+            }
+            Message::Select(index) => {
+                self.selected = index.filter(|i| *i < self.library.len());
+                Task::none()
+            }
             Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
                 self.panes.resize(split, ratio);
                 Task::none()
@@ -420,9 +458,14 @@ impl App {
                     driver,
                     sound_files,
                     sounds,
+                    library,
+                    ..
                 } = opened;
                 self.source = source;
                 self.summary = summary;
+                self.thumbs = thumbs(&engine, &library);
+                self.library = library;
+                self.selected = None;
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
                 self.edits.clear();
                 let task = self.listen(&sounds, sound_files);
@@ -641,10 +684,7 @@ impl App {
                             .height(Fill),
                     ),
                     Pane::Stage => responsive(move |size| self.stage(session, size)).into(),
-                    Pane::Summary => scrollable(summary(&self.summary))
-                        .width(Fill)
-                        .height(Fill)
-                        .into(),
+                    Pane::Library => self.library_panel(session),
                 })
             })
             .on_resize(8, Message::Resized)
@@ -824,6 +864,156 @@ impl App {
             }
         }
         panel
+    }
+}
+
+impl App {
+    /// The library area: a tab row over the show's facts or its assets.
+    fn library_panel<'a>(&'a self, session: &'a Session) -> Element<'a, Message> {
+        let tab = |label: &'a str, tab: Tab| {
+            let mut b = button(text(label).size(13)).on_press(Message::Tab(tab));
+            if self.tab == tab {
+                b = b.style(button::secondary);
+            }
+            b
+        };
+        let tabs = row![tab("Show", Tab::Show), tab("Assets", Tab::Assets)].spacing(6);
+        let body = match self.tab {
+            Tab::Show => summary(&self.summary),
+            Tab::Assets => self.assets_panel(session),
+        };
+        column![
+            container(tabs).padding([4, 8]),
+            scrollable(body).width(Fill).height(Fill)
+        ]
+        .width(Fill)
+        .height(Fill)
+        .into()
+    }
+
+    /// The assets by kind, each with its thumbnail and facts; the picked
+    /// one's file and every place the show uses it right under it.
+    fn assets_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
+        const THUMB: f32 = 40.0;
+        let mut panel = Column::new().spacing(4).padding(12);
+        if self.library.is_empty() {
+            return panel.push(text("This show ships no assets.").size(14));
+        }
+        let engine = session.engine.lock().expect("the engine is not poisoned");
+        let mut heading: Option<&str> = None;
+        for (i, asset) in self.library.iter().enumerate() {
+            if heading != Some(asset.kind.heading()) {
+                heading = Some(asset.kind.heading());
+                panel = panel.push(text(asset.kind.heading()).size(12));
+            }
+            let thumb: Element<'a, Message> = match &self.thumbs[i] {
+                Some(Thumb::Image(handle)) => image(handle.clone())
+                    .width(THUMB)
+                    .height(THUMB)
+                    .content_fit(ContentFit::Contain)
+                    .filter_method(image::FilterMethod::Nearest)
+                    .into(),
+                Some(Thumb::Svg(handle)) => svg(handle.clone())
+                    .width(THUMB)
+                    .height(THUMB)
+                    .content_fit(ContentFit::Contain)
+                    .into(),
+                None => container(text(kind_mark(asset.kind)).size(16))
+                    .width(THUMB)
+                    .height(THUMB)
+                    .center_x(THUMB)
+                    .center_y(THUMB)
+                    .into(),
+            };
+            let mut facts = match asset.kind {
+                Kind::Image => asset
+                    .size
+                    .map(|[w, h]| format!("{w} x {h} px"))
+                    .unwrap_or_default(),
+                Kind::Vector => asset
+                    .size
+                    .map(|[w, h]| format!("{w} x {h}, vector"))
+                    .unwrap_or_else(|| "vector".to_owned()),
+                Kind::Font => "font".to_owned(),
+                Kind::Sound => engine
+                    .sound_duration(&asset.name)
+                    .map(|d| format!("{d:.2} s"))
+                    .unwrap_or_else(|| "sound".to_owned()),
+                Kind::Video => engine
+                    .video(&asset.name)
+                    .map(|v| format!("{:.2} s, {} x {}", v.duration, v.width, v.height))
+                    .unwrap_or_else(|| "video".to_owned()),
+            };
+            if asset.uses.is_empty() {
+                facts.push_str(", unused");
+            }
+            let line = row![
+                thumb,
+                column![text(&asset.name).size(14), text(facts).size(12)].spacing(2)
+            ]
+            .spacing(8)
+            .align_y(iced::Center);
+            let mut b = button(line)
+                .on_press(Message::Select(Some(i)))
+                .width(Fill)
+                .style(button::text);
+            if self.selected == Some(i) {
+                b = b.style(button::secondary);
+            }
+            panel = panel.push(b);
+            if self.selected == Some(i) {
+                panel = panel.push(container(picked(asset)).padding([4, 12]));
+            }
+        }
+        panel
+    }
+}
+
+/// The picked asset's file and every place the show uses it.
+fn picked(asset: &Asset) -> Column<'_, Message> {
+    let mut facts = Column::new().spacing(3);
+    if let Some(file) = &asset.file {
+        facts = facts.push(text(file).size(12));
+    }
+    facts = facts.push(text("USED BY").size(12));
+    if asset.uses.is_empty() {
+        facts = facts.push(text("nothing in this show").size(13));
+    }
+    for used in &asset.uses {
+        facts = facts.push(row![text(&used.place).size(13), text(&used.how).size(12)].spacing(8));
+    }
+    facts
+}
+
+/// Thumbnails for the artwork in a library: an image's pixels as the
+/// engine decoded them, an SVG's bytes as the show shipped them.
+fn thumbs(engine: &cuelight::Engine, library: &[Asset]) -> Vec<Option<Thumb>> {
+    library
+        .iter()
+        .map(|asset| match asset.kind {
+            Kind::Image => engine.image(&asset.name).map(|i| {
+                Thumb::Image(image::Handle::from_rgba(
+                    i.width,
+                    i.height,
+                    i.pixels.to_vec(),
+                ))
+            }),
+            Kind::Vector => asset
+                .svg
+                .as_ref()
+                .map(|bytes| Thumb::Svg(svg::Handle::from_memory(bytes.to_vec()))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A stand-in for a thumbnail, for the kinds that have none.
+fn kind_mark(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Image | Kind::Vector => "?",
+        Kind::Font => "Aa",
+        Kind::Sound => "))",
+        Kind::Video => ">",
     }
 }
 
@@ -1011,6 +1201,35 @@ mod tests {
             ui.find("mini (format 1)").is_ok(),
             "the summary is in its pane"
         );
+    }
+
+    #[test]
+    fn the_library_lists_the_assets_and_where_they_are_used() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        let _ = app.update(Message::Tab(Tab::Assets));
+        {
+            let mut ui = simulator(app.view());
+            assert!(ui.find("ARTWORK").is_ok());
+            assert!(ui.find("dot").is_ok());
+            assert!(ui.find("8 x 8 px").is_ok(), "an image's size");
+            assert!(ui.find("USED BY").is_err(), "nothing picked yet");
+        }
+        assert!(matches!(app.thumbs.as_slice(), [Some(Thumb::Image(_))]));
+        let _ = app.update(Message::Select(Some(0)));
+        let mut ui = simulator(app.view());
+        assert!(ui.find("assets/dot.png").is_ok(), "the file");
+        assert!(ui.find("group/dot").is_ok(), "the layer that uses it");
+        assert!(ui.find("image layer").is_ok());
+        let _ = ui.click("Show");
+        for message in ui.into_messages() {
+            let _ = app.update(message);
+        }
+        assert_eq!(app.tab, Tab::Show);
     }
 
     #[test]

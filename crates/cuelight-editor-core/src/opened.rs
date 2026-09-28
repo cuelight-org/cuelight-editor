@@ -17,6 +17,8 @@ use cuelight_core::{Layer, LayerKind, Show};
 use cuelight_loader::Options;
 pub use cuelight_loader::SoundFile;
 
+use crate::assets::{self, Asset, Names};
+
 /// What was opened, where from, and what it contained.
 pub struct Opened {
     /// Where it came from: a path on the desktop, a file name in the
@@ -32,6 +34,11 @@ pub struct Opened {
     /// The show's sounds, decoded, for a host with a sound device. Their
     /// lengths are already registered with the engine.
     pub sounds: Vec<(String, Arc<Sound>)>,
+    /// Every file the show shipped, by its path within the show: the
+    /// document, the driver and the assets. Kept from open to save.
+    pub files: BTreeMap<String, Vec<u8>>,
+    /// The assets the engine registered, with their facts and uses.
+    pub library: Vec<Asset>,
 }
 
 /// The facts about a show worth showing before there is a stage.
@@ -90,6 +97,7 @@ impl Opened {
     pub fn from_path(path: &Path) -> Result<Self, OpenError> {
         let document = document_on_disk(path)?;
         check_format(&document)?;
+        let files = files_on_disk(path)?;
         let mut engine = Engine::new();
         let loaded = cuelight_loader::load_with(&mut engine, path, &Options::lenient())
             .map_err(|e| OpenError::Load(e.to_string()))?;
@@ -100,6 +108,18 @@ impl Opened {
         summary.videos = loaded.videos.len();
         summary.driver = loaded.driver.as_ref().map(|d| (d.steps.len(), d.looping));
         let sounds = decode_sounds(&mut engine, &loaded.sounds, &mut summary);
+        let names = Names {
+            images: loaded.images.clone(),
+            vectors: loaded.vectors.clone(),
+            fonts: loaded.fonts.clone(),
+            sounds: loaded.sounds.iter().map(|s| s.name.clone()).collect(),
+            videos: loaded
+                .videos
+                .iter()
+                .filter_map(|p| Some(p.file_stem()?.to_string_lossy().into_owned()))
+                .collect(),
+        };
+        let library = assets::library(&engine, &names, &files);
         summary
             .problems
             .extend(loaded.findings.iter().map(ToString::to_string));
@@ -119,6 +139,8 @@ impl Opened {
             driver: loaded.driver,
             sound_files: loaded.sounds,
             sounds,
+            files,
+            library,
         })
     }
 
@@ -144,6 +166,14 @@ impl Opened {
         summary.fonts = loaded.fonts.len();
         summary.driver = loaded.driver.as_ref().map(|d| (d.steps.len(), d.looping));
         let sounds = decode_sounds(&mut engine, &loaded.sounds, &mut summary);
+        let names = Names {
+            images: loaded.images.clone(),
+            vectors: loaded.vectors.clone(),
+            fonts: loaded.fonts.clone(),
+            sounds: loaded.sounds.iter().map(|s| s.name.clone()).collect(),
+            videos: Vec::new(),
+        };
+        let library = assets::library(&engine, &names, &files);
         summary
             .problems
             .extend(loaded.findings.iter().map(ToString::to_string));
@@ -163,6 +193,8 @@ impl Opened {
             driver: loaded.driver,
             sound_files: loaded.sounds,
             sounds,
+            files,
+            library,
         })
     }
 }
@@ -193,6 +225,32 @@ fn decode_sounds(
         }
     }
     sounds
+}
+
+/// Every file a show on disk ships, by its path within the show: what a
+/// pack holds, what a folder's manifest lists, or the loose document alone.
+#[cfg(not(target_arch = "wasm32"))]
+fn files_on_disk(path: &Path) -> Result<BTreeMap<String, Vec<u8>>, OpenError> {
+    let load = |e: cuelight_loader::LoadError| OpenError::Load(e.to_string());
+    if path.is_dir() {
+        let manifest = cuelight_loader::Manifest::for_dir(path).map_err(load)?;
+        let mut files = BTreeMap::new();
+        for name in manifest.files {
+            let bytes = std::fs::read(path.join(&name))
+                .map_err(|e| OpenError::Load(format!("{name}: {e}")))?;
+            files.insert(name, bytes);
+        }
+        return Ok(files);
+    }
+    if path
+        .extension()
+        .is_some_and(|e| e == cuelight_loader::PACK_EXTENSION)
+    {
+        return cuelight_loader::read_pack(path).map_err(load);
+    }
+    let bytes =
+        std::fs::read(path).map_err(|e| OpenError::Load(format!("{}: {e}", path.display())))?;
+    Ok(BTreeMap::from([("show.json".to_owned(), bytes)]))
 }
 
 /// The show document's text for a path of any of the three forms, read

@@ -3,6 +3,7 @@
 //! compiles in seconds and its tests run anywhere, the browser included.
 
 pub mod assets;
+pub mod document;
 pub mod inputs;
 pub mod opened;
 pub mod session;

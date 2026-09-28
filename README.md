@@ -65,6 +65,8 @@ Two crates in a workspace:
     every place the show uses them.
   - `tree.rs` lists the show's layers as the tree shows them, and finds
     a layer by its path.
+  - `document.rs` is the show document as edited: a JSON tree that keeps
+    every node's text, edits on JSON pointers, undo and redo.
 - `crates/cuelight-editor` is the window:
   - `stage.rs` draws the show: an iced shader widget in which the engine's
     presenter and vello render the frame into a texture, blitted into the

@@ -48,6 +48,9 @@ pub struct App {
     panes: pane_grid::State<Pane>,
     /// How large the stage draws the show.
     zoom: Zoom,
+    /// Physical pixels per logical one, which bounds how far the stage
+    /// can zoom before its frame is more than vello draws.
+    scale_factor: f32,
     /// The scale that fits the show into the stage area, as the last
     /// layout found it: what zooming in or out starts from while fitted.
     fitted: Cell<f32>,
@@ -75,10 +78,6 @@ impl Zoom {
     const MAX: f32 = 16.0;
     /// One step of the zoom buttons.
     const STEP: f32 = 1.25;
-
-    fn scaled(scale: f32) -> Self {
-        Self::Scale(scale.clamp(Self::MIN, Self::MAX))
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +114,8 @@ pub enum Message {
     ZoomBy(f32),
     /// A split between two areas dragged.
     Resized(pane_grid::ResizeEvent),
+    /// The window's scale factor, found or changed.
+    Rescaled(f32),
     /// The browser decoded the show's sounds: each name with its length,
     /// or why it did not decode.
     #[cfg(target_arch = "wasm32")]
@@ -145,6 +146,7 @@ impl App {
                 }),
             }),
             zoom: Zoom::Fit,
+            scale_factor: 1.0,
             fitted: Cell::new(1.0),
         };
         // A path on the command line opens at once (desktop only).
@@ -354,11 +356,18 @@ impl App {
                 Task::none()
             }
             Message::Zoom(zoom) => {
-                self.zoom = zoom;
+                self.zoom = match zoom {
+                    Zoom::Fit => Zoom::Fit,
+                    Zoom::Scale(scale) => self.zoom_to(scale),
+                };
                 Task::none()
             }
             Message::ZoomBy(factor) => {
-                self.zoom = Zoom::scaled(self.scale() * factor);
+                self.zoom = self.zoom_to(self.scale() * factor);
+                Task::none()
+            }
+            Message::Rescaled(factor) => {
+                self.scale_factor = factor;
                 Task::none()
             }
             Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
@@ -374,6 +383,29 @@ impl App {
             Zoom::Fit => self.fitted.get(),
             Zoom::Scale(scale) => scale,
         }
+    }
+
+    /// A zoom to `scale`, kept between the smallest and the largest the
+    /// stage can draw: vello stops past a frame of about 4096 x 4096
+    /// physical pixels, whatever the show's size.
+    fn zoom_to(&self, scale: f32) -> Zoom {
+        Zoom::Scale(scale.clamp(Zoom::MIN, self.max_zoom()))
+    }
+
+    /// The largest zoom whose frame vello still draws.
+    fn max_zoom(&self) -> f32 {
+        let [w, h] = self.summary.size.map(|n| n.max(1) as f32);
+        let frame = |scale: f32| {
+            [
+                (w * scale * self.scale_factor).round() as u32,
+                (h * scale * self.scale_factor).round() as u32,
+            ]
+        };
+        let mut scale = Zoom::MAX;
+        while scale > Zoom::MIN && !crate::stage::drawable(frame(scale)) {
+            scale /= 1.02;
+        }
+        scale.max(Zoom::MIN)
     }
 
     fn open(&mut self, result: Result<Opened, opened::OpenError>) -> Task<Message> {
@@ -395,7 +427,12 @@ impl App {
                 self.edits.clear();
                 let task = self.listen(&sounds, sound_files);
                 self.session = Some(Session::new(engine, driver));
-                task
+                // The window's scale factor bounds the zoom; ask once a
+                // window is there to ask.
+                let rescaled = iced::window::latest()
+                    .and_then(iced::window::scale_factor)
+                    .map(Message::Rescaled);
+                Task::batch([task, rescaled])
             }
             Err(error) => {
                 self.status = format!("could not open: {error}");
@@ -513,7 +550,11 @@ impl App {
             }
             _ => None,
         });
-        let mut subscriptions = vec![keys];
+        let rescaled = iced::window::events().filter_map(|(_, event)| match event {
+            iced::window::Event::Rescaled(factor) => Some(Message::Rescaled(factor)),
+            _ => None,
+        });
+        let mut subscriptions = vec![keys, rescaled];
         if self.session.as_ref().is_some_and(|s| !s.paused) {
             subscriptions.push(iced::window::frames().map(Message::Tick));
         }
@@ -910,6 +951,31 @@ mod tests {
         assert!(fitted > 0.0 && fitted != 1.0, "{fitted}");
         let _ = app.update(Message::ZoomBy(1.0 / Zoom::STEP));
         assert_eq!(app.zoom, Zoom::Scale(fitted / Zoom::STEP));
+    }
+
+    #[test]
+    fn the_zoom_stops_where_vello_stops_drawing() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        // A 64 x 32 show zooms all the way.
+        let _ = app.update(Message::ZoomBy(100.0));
+        assert_eq!(app.zoom, Zoom::Scale(Zoom::MAX));
+        // A 4000 x 4000 one on a 2x screen stops near 4096 physical pixels.
+        app.summary.size = [4000, 4000];
+        let _ = app.update(Message::Rescaled(2.0));
+        let _ = app.update(Message::Zoom(Zoom::Scale(1.0)));
+        let Zoom::Scale(scale) = app.zoom else {
+            panic!("a scale");
+        };
+        assert!((0.45..=0.512).contains(&scale), "{scale}");
+        assert!(crate::stage::drawable([
+            (4000.0 * scale * 2.0).round() as u32,
+            (4000.0 * scale * 2.0).round() as u32
+        ]));
     }
 
     #[test]

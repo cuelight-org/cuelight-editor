@@ -7,6 +7,14 @@
 //! through a storage binding, which a window's surface cannot be, hence
 //! the texture in between; when the window is sRGB the texture is read
 //! through an sRGB view, so the colours survive the round trip.
+//!
+//! A zoomed-in widget is larger than what its scrollable shows of it:
+//! `render` gets only the visible clip, and draws the slice of the frame
+//! that lies under it. Vello's compute renderer draws targets of at most
+//! [`MAX_BINS`] bins of [`BIN`] pixels (linebender/vello#680, about
+//! 4096 x 4096 in all), so the frame is not prepared past that and the
+//! window keeps its zoom under it (cuelight#245 asks for a presented
+//! view instead).
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -15,6 +23,16 @@ use cuelight::Engine;
 use cuelight::render::Presenter;
 use iced::widget::shader::{self, Action, Viewport};
 use iced::{Event, Rectangle, mouse};
+
+/// The side of one of vello's coarse bins, in pixels.
+pub const BIN: u32 = 256;
+/// How many bins vello's compute renderer draws in one target.
+pub const MAX_BINS: u32 = 256;
+
+/// Whether vello draws a target of this size at all.
+pub fn drawable(size: [u32; 2]) -> bool {
+    size[0].div_ceil(BIN) * size[1].div_ceil(BIN) <= MAX_BINS
+}
 
 /// The widget's program: what to draw is whatever the engine shows now,
 /// and a click on it is a press at a canvas point.
@@ -130,11 +148,28 @@ impl shader::Primitive for Frame {
             ((bounds.width * scale).round() as u32).max(1),
             ((bounds.height * scale).round() as u32).max(1),
         ];
+        pipeline.bounds = [
+            bounds.x * scale,
+            bounds.y * scale,
+            size[0] as f32,
+            size[1] as f32,
+        ];
+        if !drawable(size) {
+            if pipeline.target.take().is_some() {
+                log::warn!(
+                    "stage: {} x {} is more than vello draws, the stage stays blank",
+                    size[0],
+                    size[1]
+                );
+            }
+            return;
+        }
         if pipeline.target.as_ref().is_none_or(|t| t.size != size) {
             pipeline.target = Some(Target::new(
                 device,
                 &pipeline.layout,
                 &pipeline.sampler,
+                &pipeline.uniform,
                 pipeline.srgb,
                 size,
             ));
@@ -185,6 +220,18 @@ impl shader::Primitive for Frame {
         let Some(frame) = pipeline.target.as_ref().filter(|_| pipeline.drawn) else {
             return;
         };
+        // The slice of the frame under the clip, as texture coordinates.
+        let [x, y, w, h] = pipeline.bounds;
+        let u0 = (clip.x as f32 - x) / w;
+        let v0 = (clip.y as f32 - y) / h;
+        let rect = [
+            u0,
+            v0,
+            u0 + clip.width as f32 / w,
+            v0 + clip.height as f32 / h,
+        ];
+        let bytes: Vec<u8> = rect.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        pipeline.queue.write_buffer(&pipeline.uniform, 0, &bytes);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("cuelight-stage-blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -226,6 +273,14 @@ pub struct Pipeline {
     blit: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// The queue, for writing the blit's slice from `render`, which is
+    /// handed an encoder only.
+    queue: wgpu::Queue,
+    /// Which slice of the frame the blit draws: `[u0, v0, u1, v1]`.
+    uniform: wgpu::Buffer,
+    /// The widget's whole box in physical pixels, `[x, y, width,
+    /// height]`, as the last `prepare` saw it.
+    bounds: [f32; 4],
     /// The window wants sRGB-encoded values decoded on the way in.
     srgb: bool,
     target: Option<Target>,
@@ -251,13 +306,17 @@ struct Target {
 const BLIT: &str = r#"
 @group(0) @binding(0) var frame: texture_2d<f32>;
 @group(0) @binding(1) var frame_sampler: sampler;
+// The slice of the frame under the viewport: u0, v0, u1, v1.
+@group(0) @binding(2) var<uniform> slice: vec4<f32>;
 
 struct Vertex { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> }
 
-// One triangle over the whole viewport; the viewport is the widget.
+// One triangle over the whole viewport; the viewport is the visible
+// part of the widget, and gets the frame's slice under it.
 @vertex fn vs(@builtin(vertex_index) index: u32) -> Vertex {
-    let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
-    return Vertex(vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0), uv);
+    let corner = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
+    let uv = mix(slice.xy, slice.zw, corner);
+    return Vertex(vec4<f32>(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0), uv);
 }
 
 @fragment fn fs(vertex: Vertex) -> @location(0) vec4<f32> {
@@ -266,7 +325,7 @@ struct Vertex { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
 "#;
 
 impl shader::Pipeline for Pipeline {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let limits = device.limits();
         log::info!(
             "stage: window format {format:?}; device allows {} compute workgroups per dimension and {} storage buffers per stage",
@@ -306,7 +365,23 @@ impl shader::Pipeline for Pipeline {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
+        });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cuelight-stage-slice"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("cuelight-stage-blit"),
@@ -352,6 +427,9 @@ impl shader::Pipeline for Pipeline {
             blit,
             layout,
             sampler,
+            queue: queue.clone(),
+            uniform,
+            bounds: [0.0, 0.0, 1.0, 1.0],
             srgb: format.is_srgb(),
             target: None,
             drawn: false,
@@ -364,6 +442,7 @@ impl Target {
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
+        uniform: &wgpu::Buffer,
         srgb: bool,
         size: [u32; 2],
     ) -> Self {
@@ -401,6 +480,10 @@ impl Target {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform.as_entire_binding(),
                 },
             ],
         });

@@ -492,7 +492,7 @@ impl App {
             for (name, initial) in &self.inputs.variables {
                 let current = session.value(name).unwrap_or_else(|| initial.clone());
                 let control: Element<'a, Message> = match current {
-                    cuelight::Value::Bool(on) => toggler(on)
+                    cuelight_core::Value::Bool(on) => toggler(on)
                         .on_toggle(move |on| Message::Set(name.clone(), on.to_string()))
                         .size(16)
                         .into(),
@@ -724,7 +724,7 @@ mod tests {
         let _ = app.update(Message::Set("lit".to_owned(), "true".to_owned()));
         assert_eq!(
             app.session.as_ref().unwrap().value("lit"),
-            Some(cuelight::Value::Bool(true))
+            Some(cuelight_core::Value::Bool(true))
         );
         let _ = app.update(Message::Fire("go".to_owned()));
         let mut ui = simulator(app.view());
@@ -751,13 +751,13 @@ mod tests {
         let _ = app.update(Message::Seek(1.0));
         assert_eq!(
             app.session.as_ref().unwrap().value("lit"),
-            Some(cuelight::Value::Bool(false))
+            Some(cuelight_core::Value::Bool(false))
         );
         let _ = app.update(Message::Drive(true));
         let _ = app.update(Message::Seek(1.0));
         assert_eq!(
             app.session.as_ref().unwrap().value("lit"),
-            Some(cuelight::Value::Bool(true))
+            Some(cuelight_core::Value::Bool(true))
         );
     }
 }

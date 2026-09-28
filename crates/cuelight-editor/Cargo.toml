@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 cuelight-editor-core = { path = "../cuelight-editor-core" }
 cuelight.workspace = true
+cuelight-core.workspace = true
 iced.workspace = true
 log.workspace = true
 rfd = "0.17"

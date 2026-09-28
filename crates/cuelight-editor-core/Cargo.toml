@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 cuelight.workspace = true
+cuelight-core.workspace = true
 cuelight-loader.workspace = true
 # Decoding a show's sounds, for their lengths; playing them is the host's.
 cuelight-audio.workspace = true

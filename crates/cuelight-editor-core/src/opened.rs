@@ -7,8 +7,9 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
-use cuelight::{Engine, Layer, LayerKind, Show};
+use cuelight::Engine;
 pub use cuelight_audio::Sound;
+use cuelight_core::{Layer, LayerKind, Show};
 use cuelight_loader::SoundFile;
 
 /// What was opened, where from, and what it contained.
@@ -206,10 +207,10 @@ fn check_format(document: &str) -> Result<(), OpenError> {
         .ok()
         .and_then(|v| v.get("format")?.as_u64())
         .unwrap_or(1) as u32;
-    if found > cuelight::FORMAT {
+    if found > cuelight_core::FORMAT {
         return Err(OpenError::NewerFormat {
             found,
-            known: cuelight::FORMAT,
+            known: cuelight_core::FORMAT,
         });
     }
     Ok(())

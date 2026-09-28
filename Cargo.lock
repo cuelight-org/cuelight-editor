@@ -761,12 +761,11 @@ dependencies = [
 [[package]]
 name = "cuelight"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=ac028b9b52418c2c817e7272984155f7fdf15c3b#ac028b9b52418c2c817e7272984155f7fdf15c3b"
+source = "git+https://github.com/francisdb/cuelight?rev=72e15c8beec366b83ed7de5f5d891a3a5c5f727c#72e15c8beec366b83ed7de5f5d891a3a5c5f727c"
 dependencies = [
+ "cuelight-core",
  "png",
  "pollster 1.0.1",
- "serde",
- "serde_json",
  "skrifa 0.44.0",
  "thiserror 2.0.21",
  "vello",
@@ -775,13 +774,23 @@ dependencies = [
 [[package]]
 name = "cuelight-audio"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=ac028b9b52418c2c817e7272984155f7fdf15c3b#ac028b9b52418c2c817e7272984155f7fdf15c3b"
+source = "git+https://github.com/francisdb/cuelight?rev=72e15c8beec366b83ed7de5f5d891a3a5c5f727c#72e15c8beec366b83ed7de5f5d891a3a5c5f727c"
 dependencies = [
  "cpal",
- "cuelight",
+ "cuelight-core",
  "hound",
  "log",
  "symphonia",
+]
+
+[[package]]
+name = "cuelight-core"
+version = "0.0.1"
+source = "git+https://github.com/francisdb/cuelight?rev=72e15c8beec366b83ed7de5f5d891a3a5c5f727c#72e15c8beec366b83ed7de5f5d891a3a5c5f727c"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -792,6 +801,7 @@ dependencies = [
  "console_log",
  "cuelight",
  "cuelight-audio",
+ "cuelight-core",
  "cuelight-editor-core",
  "env_logger",
  "iced",
@@ -812,6 +822,7 @@ version = "0.0.1"
 dependencies = [
  "cuelight",
  "cuelight-audio",
+ "cuelight-core",
  "cuelight-loader",
  "log",
  "serde_json",
@@ -822,9 +833,10 @@ dependencies = [
 [[package]]
 name = "cuelight-loader"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=ac028b9b52418c2c817e7272984155f7fdf15c3b#ac028b9b52418c2c817e7272984155f7fdf15c3b"
+source = "git+https://github.com/francisdb/cuelight?rev=72e15c8beec366b83ed7de5f5d891a3a5c5f727c#72e15c8beec366b83ed7de5f5d891a3a5c5f727c"
 dependencies = [
  "cuelight",
+ "cuelight-core",
  "png",
  "serde",
  "serde_json",

@@ -110,7 +110,7 @@ fn main() {
         for to in targets {
             let all = inputs(&driver, to);
             let started = Instant::now();
-            seek(&mut engine, Some(driver.clone()), &live, to, 60.0);
+            seek(engine.core_mut(), Some(driver.clone()), &live, to, 60.0);
             let stepped = started.elapsed().as_secs_f64() * 1e3;
             let a: BTreeMap<_, _> = engine
                 .values()

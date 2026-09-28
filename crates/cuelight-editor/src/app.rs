@@ -715,6 +715,13 @@ impl App {
                 vertical: Scrollbar::default(),
                 horizontal: Scrollbar::default(),
             })
+            // The corner where the two scrollbars meet is the window's,
+            // not the show's.
+            .style(|theme, status| {
+                let mut style = scrollable::default(theme, status);
+                style.gap = Some(theme.palette().background.weak.color.into());
+                style
+            })
             .width(Fill)
             .height(Fill);
         column![container(bar).padding([4, 8]).height(BAR), scrolled]

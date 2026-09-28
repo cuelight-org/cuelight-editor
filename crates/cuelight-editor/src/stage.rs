@@ -21,8 +21,18 @@ use std::sync::{Arc, Mutex};
 
 use cuelight::Engine;
 use cuelight::render::Presenter;
+use cuelight_core::LayerPath;
+use cuelight_editor_core::tree;
 use iced::widget::shader::{self, Action, Viewport};
-use iced::{Event, Rectangle, mouse};
+use iced::{Event, Rectangle, keyboard, mouse};
+
+/// How a click picked: with Alt, the next layer down; with Shift, added
+/// to the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Pick {
+    pub alt: bool,
+    pub shift: bool,
+}
 
 /// The side of one of vello's coarse bins, in pixels.
 pub const BIN: u32 = 256;
@@ -40,52 +50,86 @@ pub struct Stage<Message> {
     pub engine: Arc<Mutex<Engine>>,
     /// Changes when the show moved, so iced prepares a new frame.
     pub revision: u64,
-    /// The message a press at a canvas point becomes.
+    /// The layers drawn with a box round them.
+    pub selection: Vec<LayerPath>,
+    /// The message a click at a canvas point becomes: a pick of the
+    /// layer there.
+    pub on_pick: fn([f64; 2], Pick) -> Message,
+    /// The message a Ctrl-click becomes: the show's own press.
     pub on_press: fn([f64; 2]) -> Message,
 }
 
 impl<Message> shader::Program<Message> for Stage<Message> {
-    type State = ();
+    /// The modifiers held, which say what a click means.
+    type State = keyboard::Modifiers;
     type Primitive = Frame;
 
     fn update(
         &self,
-        _state: &mut (),
+        modifiers: &mut keyboard::Modifiers,
         event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<Action<Message>> {
-        let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event else {
-            return None;
-        };
-        let at = cursor.position_in(bounds)?;
-        let engine = self.engine.lock().ok()?;
-        let show = engine.show()?;
-        // The stage fits the show into its box the way a player fits it
-        // into a window, so the same arithmetic maps a point back.
-        let target = [bounds.width.round() as u32, bounds.height.round() as u32];
-        let point = cuelight::render::canvas_at(
-            show.size,
-            target,
-            engine.scaling(),
-            [f64::from(at.x), f64::from(at.y)],
-        )?;
-        Some(Action::publish((self.on_press)(point)).and_capture())
+        match event {
+            Event::Keyboard(keyboard::Event::ModifiersChanged(held)) => {
+                *modifiers = *held;
+                None
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let at = cursor.position_in(bounds)?;
+                let engine = self.engine.lock().ok()?;
+                let show = engine.show()?;
+                // The stage fits the show into its box the way a player
+                // fits it into a window, so the same arithmetic maps a
+                // point back.
+                let target = [bounds.width.round() as u32, bounds.height.round() as u32];
+                let point = cuelight::render::canvas_at(
+                    show.size,
+                    target,
+                    engine.scaling(),
+                    [f64::from(at.x), f64::from(at.y)],
+                )?;
+                let message = if modifiers.control() {
+                    (self.on_press)(point)
+                } else {
+                    (self.on_pick)(
+                        point,
+                        Pick {
+                            alt: modifiers.alt(),
+                            shift: modifiers.shift(),
+                        },
+                    )
+                };
+                Some(Action::publish(message).and_capture())
+            }
+            _ => None,
+        }
     }
 
-    fn draw(&self, _state: &(), _cursor: mouse::Cursor, _bounds: Rectangle) -> Frame {
+    fn draw(
+        &self,
+        _state: &keyboard::Modifiers,
+        _cursor: mouse::Cursor,
+        _bounds: Rectangle,
+    ) -> Frame {
         Frame {
             engine: self.engine.clone(),
             revision: self.revision,
+            selection: self.selection.clone(),
         }
     }
 
     fn mouse_interaction(
         &self,
-        _state: &(),
+        modifiers: &keyboard::Modifiers,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        // A click picks; only a Ctrl-click presses the show.
+        if !modifiers.control() {
+            return mouse::Interaction::default();
+        }
         // A pointer over something pressable says so.
         let Some(at) = cursor.position_in(bounds) else {
             return mouse::Interaction::default();
@@ -116,11 +160,110 @@ impl<Message> shader::Program<Message> for Stage<Message> {
 pub struct Frame {
     engine: Arc<Mutex<Engine>>,
     revision: u64,
+    selection: Vec<LayerPath>,
 }
 
 impl fmt::Debug for Frame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Frame(revision {})", self.revision)
+        write!(
+            f,
+            "Frame(revision {}, {} selected)",
+            self.revision,
+            self.selection.len()
+        )
+    }
+}
+
+/// The box round every drawn item of each selected layer, in canvas
+/// units, as `[x0, y0, x1, y1]`; a group's box holds its children's.
+fn boxes(engine: &Engine, selection: &[LayerPath]) -> Vec<[f64; 4]> {
+    use cuelight::ResolvedShape;
+    let Ok(items) = engine.resolved_layers() else {
+        return Vec::new();
+    };
+    let mut out: Vec<Option<[f64; 4]>> = vec![None; selection.len()];
+    for item in &items {
+        let mut points: Vec<[f64; 2]> = Vec::new();
+        match &item.shape {
+            ResolvedShape::Rect {
+                x,
+                y,
+                width,
+                height,
+            }
+            | ResolvedShape::Image {
+                x,
+                y,
+                width,
+                height,
+                ..
+            }
+            | ResolvedShape::Bitmap {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => {
+                points.extend([
+                    [*x, *y],
+                    [x + width, *y],
+                    [*x, y + height],
+                    [x + width, y + height],
+                ]);
+            }
+            ResolvedShape::Circle { cx, cy, radius } => {
+                points.extend([[cx - radius, cy - radius], [cx + radius, cy + radius]]);
+            }
+            ResolvedShape::Polygon { points: p } => points.extend(p.iter().copied()),
+            ResolvedShape::Path { elements, .. } => {
+                use cuelight_core::PathElement::*;
+                for element in elements {
+                    match element {
+                        MoveTo(p) | LineTo(p) => points.push(*p),
+                        QuadTo(a, b) => points.extend([*a, *b]),
+                        CubicTo(a, b, c) => points.extend([*a, *b, *c]),
+                        Close => {}
+                    }
+                }
+            }
+            ResolvedShape::GlyphRun { size, glyphs, .. } => {
+                for glyph in glyphs {
+                    points.extend([[glyph.x, glyph.y - size], [glyph.x + size, glyph.y]]);
+                }
+            }
+            _ => continue,
+        }
+        for (slot, selected) in out.iter_mut().zip(selection) {
+            if !tree::within(&item.layer, selected) {
+                continue;
+            }
+            for point in &points {
+                let [x, y] = item.transform.apply(*point);
+                *slot = Some(match *slot {
+                    None => [x, y, x, y],
+                    Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x), y1.max(y)],
+                });
+            }
+        }
+    }
+    out.into_iter().flatten().collect()
+}
+
+/// Draw the selection's boxes over the presented show.
+fn outline(
+    scene: &mut vello::Scene,
+    boxes: &[[f64; 4]],
+    placement: (f64, f64, f64, f64),
+    show: [u32; 2],
+) {
+    use vello::kurbo::{Affine, Rect, Stroke};
+    let (x, y, width, height) = placement;
+    let (sx, sy) = (width / f64::from(show[0]), height / f64::from(show[1]));
+    let color = vello::peniko::Color::from_rgba8(0x5B, 0x8C, 0xFF, 0xFF);
+    for [x0, y0, x1, y1] in boxes {
+        let rect = Rect::new(x + x0 * sx, y + y0 * sy, x + x1 * sx, y + y1 * sy).inflate(1.0, 1.0);
+        scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, color, None, &rect);
     }
 }
 
@@ -181,7 +324,7 @@ impl shader::Primitive for Frame {
                 Ok(engine) => engine,
                 Err(_) => return,
             };
-            match gpu
+            let mut presented = match gpu
                 .presenter
                 .present(&engine, device, queue, renderer, size)
             {
@@ -190,7 +333,19 @@ impl shader::Primitive for Frame {
                     log::warn!("stage: cannot present the show: {error}");
                     return;
                 }
+            };
+            if !self.selection.is_empty()
+                && let Some(show) = engine.show()
+            {
+                let placement = cuelight::render::fit(show.size, size, engine.scaling());
+                outline(
+                    &mut presented.scene,
+                    &boxes(&engine, &self.selection),
+                    placement,
+                    show.size,
+                );
             }
+            presented
         };
         if let Err(error) = renderer.render_to_texture(
             device,

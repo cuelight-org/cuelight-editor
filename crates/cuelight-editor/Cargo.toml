@@ -15,6 +15,7 @@ cuelight-core.workspace = true
 iced.workspace = true
 log.workspace = true
 rfd = "0.17"
+serde_json.workspace = true
 # The stage draws with the engine's renderer. Both must be the wgpu iced
 # draws with (29 today); cargo unifies them, and a mismatch fails the
 # build rather than the picture.

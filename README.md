@@ -14,6 +14,7 @@ transitions are shown, and the work items in order).
 ```sh
 cargo run --release                                # an empty window: open a show from the bar
 cargo run --release -- ../cuelight-examples/deck   # or open one straight away
+cargo run --release -- --help                      # the options: --zoom, --pick, --silent, --screenshot
 ```
 
 Open a show folder, a packed show (`.cuelight`) or a loose `show.json`

@@ -4,24 +4,32 @@
 //!
 //! An edit is made on a JSON pointer and carries what it replaced, so
 //! its inverse is the same edit the other way round: undo and redo are
-//! two stacks of edits, and undoing everything gives the text back
-//! exactly, `1.0` where `1.0` was written and the keys in their order.
+//! two stacks of steps, each one edit or several made as one, and
+//! undoing everything gives the text back exactly, `1.0` where `1.0`
+//! was written and the keys in their order.
+//!
+//! A step is what undo takes back at once. Left alone, every edit is
+//! its own step; between [`Document::begin_step`] and
+//! [`Document::end_step`] every edit joins the one step, and a `set` of
+//! a path the step already set folds into that edit, so a drag that
+//! sets `x` sixty times a second is one step with the first `before`
+//! and the last `after`.
 
 use std::fmt;
 
 use serde_json::Value;
 
-/// A step of a JSON pointer: into an object by key, into an array by
+/// A part of a JSON pointer: into an object by key, into an array by
 /// index.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Step {
+pub enum Part {
     Key(String),
     Index(usize),
 }
 
 /// Where in the document: a JSON pointer (RFC 6901), `/layers/2/x`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Pointer(pub Vec<Step>);
+pub struct Pointer(pub Vec<Part>);
 
 impl Pointer {
     pub fn parse(text: &str) -> Result<Self, EditError> {
@@ -36,8 +44,8 @@ impl Pointer {
                 .map(|part| {
                     let part = part.replace("~1", "/").replace("~0", "~");
                     match part.parse::<usize>() {
-                        Ok(i) if part.len() == 1 || !part.starts_with('0') => Step::Index(i),
-                        _ => Step::Key(part),
+                        Ok(i) if part.len() == 1 || !part.starts_with('0') => Part::Index(i),
+                        _ => Part::Key(part),
                     }
                 })
                 .collect(),
@@ -45,14 +53,14 @@ impl Pointer {
     }
 
     /// This pointer one step further down.
-    pub fn then(&self, step: Step) -> Self {
+    pub fn then(&self, step: Part) -> Self {
         let mut steps = self.0.clone();
         steps.push(step);
         Self(steps)
     }
 
     /// The parent and the last step, or `None` at the root.
-    fn split(&self) -> Option<(Pointer, &Step)> {
+    fn split(&self) -> Option<(Pointer, &Part)> {
         let (last, parent) = self.0.split_last()?;
         Some((Pointer(parent.to_vec()), last))
     }
@@ -62,8 +70,8 @@ impl fmt::Display for Pointer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for step in &self.0 {
             match step {
-                Step::Key(key) => write!(f, "/{}", key.replace('~', "~0").replace('/', "~1"))?,
-                Step::Index(i) => write!(f, "/{i}")?,
+                Part::Key(key) => write!(f, "/{}", key.replace('~', "~0").replace('/', "~1"))?,
+                Part::Index(i) => write!(f, "/{i}")?,
             }
         }
         Ok(())
@@ -212,18 +220,27 @@ impl Edit {
     }
 }
 
-/// The document: its tree, and the edits made to it.
+/// What undo takes back at once: one edit, or several made as one.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Step {
+    pub edits: Vec<Edit>,
+}
+
+/// The document: its tree, and the steps made to it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Document {
     /// Text before the root node and after it.
     head: String,
     root: Node,
     foot: String,
-    undo: Vec<Edit>,
-    redo: Vec<Edit>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     /// How far down the undo stack the saved state lies, or `None` when
     /// it was undone past.
     saved: Option<usize>,
+    /// How many `begin_step` calls are open; while any is, edits join
+    /// the step on top of the undo stack.
+    open: usize,
 }
 
 impl Document {
@@ -243,6 +260,7 @@ impl Document {
             undo: Vec::new(),
             redo: Vec::new(),
             saved: Some(0),
+            open: 0,
         })
     }
 
@@ -268,7 +286,8 @@ impl Document {
         self.root.get(&path.0)
     }
 
-    /// Replace what is at `path` with `value`.
+    /// Replace what is at `path` with `value`. Inside an open step, a
+    /// path the step already set folds into that edit.
     pub fn set(&mut self, path: &Pointer, value: Value) -> Result<(), EditError> {
         let indent = self.indent_at(path);
         let after = Node::from_value(&value, &indent);
@@ -277,12 +296,50 @@ impl Document {
             .get_mut(&path.0)
             .ok_or_else(|| EditError::NotFound(path.clone()))?;
         let before = std::mem::replace(target, after.clone());
+        if self.open > 0
+            && let Some(step) = self.undo.last_mut()
+            && let Some(Edit::Set {
+                path: same,
+                after: last,
+                ..
+            }) = step.edits.last_mut()
+            && *same == *path
+        {
+            *last = after;
+            return Ok(());
+        }
         self.record(Edit::Set {
             path: path.clone(),
             before,
             after,
         });
         Ok(())
+    }
+
+    /// Start a step: every edit until the matching `end_step` is one
+    /// thing to undo. A drag opens one when it starts and ends it when
+    /// it lets go; a compound edit wraps its parts. Steps nest, and the
+    /// outermost one is what counts.
+    pub fn begin_step(&mut self) {
+        if self.open == 0 {
+            self.redo.clear();
+            self.undo.push(Step::default());
+        }
+        self.open += 1;
+    }
+
+    /// Close the step `begin_step` opened. A step that made no edit
+    /// leaves nothing to undo.
+    pub fn end_step(&mut self) {
+        self.open = self.open.saturating_sub(1);
+        if self.open == 0 && self.undo.last().is_some_and(|step| step.edits.is_empty()) {
+            self.undo.pop();
+        }
+    }
+
+    /// Whether a step is open.
+    pub fn in_step(&self) -> bool {
+        self.open > 0
     }
 
     /// Put `value` into the array or object `path`'s parent names, at
@@ -299,8 +356,8 @@ impl Document {
             .get_mut(&parent.0)
             .ok_or_else(|| EditError::NotFound(parent.clone()))?;
         let key = match (&*container, step) {
-            (Node::Object { .. }, Step::Key(key)) => format!("{}: ", Value::String(key.clone())),
-            (Node::Array { .. }, Step::Index(_)) => String::new(),
+            (Node::Object { .. }, Part::Key(key)) => format!("{}: ", Value::String(key.clone())),
+            (Node::Array { .. }, Part::Index(_)) => String::new(),
             _ => return Err(EditError::NotAContainer(path.clone())),
         };
         let item = Item {
@@ -341,31 +398,48 @@ impl Document {
     }
 
     fn record(&mut self, edit: Edit) {
-        self.undo.push(edit);
-        self.redo.clear();
+        if self.open > 0
+            && let Some(step) = self.undo.last_mut()
+        {
+            step.edits.push(edit);
+        } else {
+            self.undo.push(Step { edits: vec![edit] });
+            self.redo.clear();
+        }
         if self.saved.is_some_and(|depth| depth >= self.undo.len()) {
             self.saved = None;
         }
     }
 
-    /// Take the last edit back. `false` when there is none.
+    /// Take the last step back. `false` when there is none, or a step
+    /// is still open.
     pub fn undo(&mut self) -> bool {
-        let Some(edit) = self.undo.pop() else {
+        if self.open > 0 {
+            return false;
+        }
+        let Some(step) = self.undo.pop() else {
             return false;
         };
-        let inverse = edit.inverse();
-        self.apply(&inverse);
-        self.redo.push(inverse.inverse());
+        for edit in step.edits.iter().rev() {
+            self.apply(&edit.clone().inverse());
+        }
+        self.redo.push(step);
         true
     }
 
-    /// Make the last undone edit again. `false` when there is none.
+    /// Make the last undone step again. `false` when there is none, or
+    /// a step is still open.
     pub fn redo(&mut self) -> bool {
-        let Some(edit) = self.redo.pop() else {
+        if self.open > 0 {
+            return false;
+        }
+        let Some(step) = self.redo.pop() else {
             return false;
         };
-        self.apply(&edit);
-        self.undo.push(edit);
+        for edit in &step.edits {
+            self.apply(edit);
+        }
+        self.undo.push(step);
         true
     }
 
@@ -377,8 +451,8 @@ impl Document {
         !self.redo.is_empty()
     }
 
-    /// The edits made since the document was read or last saved.
-    pub fn edits(&self) -> &[Edit] {
+    /// The steps that can be undone, oldest first.
+    pub fn steps(&self) -> &[Step] {
         &self.undo
     }
 
@@ -459,34 +533,34 @@ fn indent_of(gap: &str) -> String {
 }
 
 impl Node {
-    fn get(&self, path: &[Step]) -> Option<&Node> {
+    fn get(&self, path: &[Part]) -> Option<&Node> {
         let Some((step, rest)) = path.split_first() else {
             return Some(self);
         };
         self.item(step)?.node.get(rest)
     }
 
-    fn get_mut(&mut self, path: &[Step]) -> Option<&mut Node> {
+    fn get_mut(&mut self, path: &[Part]) -> Option<&mut Node> {
         let Some((step, rest)) = path.split_first() else {
             return Some(self);
         };
         self.item_mut(step)?.node.get_mut(rest)
     }
 
-    fn item(&self, step: &Step) -> Option<&Item> {
+    fn item(&self, step: &Part) -> Option<&Item> {
         match (self, step) {
-            (Node::Array { items, .. }, Step::Index(i)) => items.get(*i),
-            (Node::Object { items, .. }, Step::Key(key)) => items
+            (Node::Array { items, .. }, Part::Index(i)) => items.get(*i),
+            (Node::Object { items, .. }, Part::Key(key)) => items
                 .iter()
                 .find(|item| item.key_name().as_deref() == Some(key)),
             _ => None,
         }
     }
 
-    fn item_mut(&mut self, step: &Step) -> Option<&mut Item> {
+    fn item_mut(&mut self, step: &Part) -> Option<&mut Item> {
         match (self, step) {
-            (Node::Array { items, .. }, Step::Index(i)) => items.get_mut(*i),
-            (Node::Object { items, .. }, Step::Key(key)) => items
+            (Node::Array { items, .. }, Part::Index(i)) => items.get_mut(*i),
+            (Node::Object { items, .. }, Part::Key(key)) => items
                 .iter_mut()
                 .find(|item| item.key_name().as_deref() == Some(key)),
             _ => None,
@@ -494,10 +568,10 @@ impl Node {
     }
 
     /// Where the item `step` names sits among the items.
-    fn index_of(&self, step: &Step) -> Option<usize> {
+    fn index_of(&self, step: &Part) -> Option<usize> {
         match (self, step) {
-            (Node::Array { items, .. }, Step::Index(i)) => (*i < items.len()).then_some(*i),
-            (Node::Object { items, .. }, Step::Key(key)) => items
+            (Node::Array { items, .. }, Part::Index(i)) => (*i < items.len()).then_some(*i),
+            (Node::Object { items, .. }, Part::Key(key)) => items
                 .iter()
                 .position(|it| it.key_name().as_deref() == Some(key)),
             _ => None,
@@ -510,18 +584,18 @@ impl Node {
     /// before it, and that one gets a separator.
     fn insert(
         &mut self,
-        step: &Step,
+        step: &Part,
         item: Item,
         path: &Pointer,
     ) -> Result<(usize, Item, Option<String>), EditError> {
         let index = match (&*self, step) {
-            (Node::Array { items, .. }, Step::Index(i)) => {
+            (Node::Array { items, .. }, Part::Index(i)) => {
                 if *i > items.len() {
                     return Err(EditError::OutOfRange(path.clone()));
                 }
                 *i
             }
-            (Node::Object { items, .. }, Step::Key(key)) => {
+            (Node::Object { items, .. }, Part::Key(key)) => {
                 if items.iter().any(|it| it.key_name().as_deref() == Some(key)) {
                     return Err(EditError::Exists(path.clone()));
                 }
@@ -904,7 +978,7 @@ mod tests {
         let mut doc = Document::parse(SHOW).unwrap();
         let layers = Pointer::parse("/layers").unwrap();
         doc.insert(
-            &layers.then(Step::Index(1)),
+            &layers.then(Part::Index(1)),
             json!({"name": "c", "type": "shape"}),
         )
         .unwrap();
@@ -915,7 +989,7 @@ mod tests {
             ),
             "{text}"
         );
-        doc.remove(&layers.then(Step::Index(0))).unwrap();
+        doc.remove(&layers.then(Part::Index(0))).unwrap();
         doc.remove(&Pointer::parse("/layers/1/y").unwrap()).unwrap();
         doc.insert(&Pointer::parse("/size/2").unwrap(), json!(9))
             .unwrap();
@@ -946,6 +1020,52 @@ mod tests {
             text.contains("},\n    {\n      \"name\": \"g\",\n      \"type\": \"group\",\n      \"children\": [\n        {\"name\": \"c\", \"type\": \"shape\"}\n      ]\n    }\n  ],"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_drag_is_one_step_and_a_compound_edit_too() {
+        let mut doc = Document::parse(SHOW).unwrap();
+        let x = Pointer::parse("/layers/0/x").unwrap();
+        // Two seconds of dragging at sixty frames a second.
+        doc.begin_step();
+        for frame in 1..=120 {
+            doc.set(&x, json!(frame)).unwrap();
+        }
+        doc.end_step();
+        assert_eq!(doc.steps().len(), 1, "one step");
+        assert_eq!(doc.steps()[0].edits.len(), 1, "one edit, folded");
+        assert!(doc.text().contains(r#""x": 120"#));
+        assert!(doc.undo());
+        assert_eq!(doc.text(), SHOW);
+        assert!(doc.redo());
+        assert!(doc.text().contains(r#""x": 120"#));
+
+        // A rename across the show: three edits, one step; nested steps
+        // are one step too.
+        doc.begin_step();
+        doc.set(&Pointer::parse("/layers/0/name").unwrap(), json!("z"))
+            .unwrap();
+        doc.begin_step();
+        doc.set(&Pointer::parse("/layers/1/name").unwrap(), json!("zz"))
+            .unwrap();
+        doc.insert(&Pointer::parse("/scenes/0").unwrap(), json!({"name": "z"}))
+            .unwrap();
+        doc.end_step();
+        assert!(!doc.undo(), "nothing is undone while a step is open");
+        doc.end_step();
+        assert_eq!(doc.steps().len(), 2);
+        assert_eq!(doc.steps()[1].edits.len(), 3);
+        assert!(doc.undo());
+        assert!(doc.text().contains(r#""x": 120"#));
+        assert!(!doc.text().contains("zz"));
+        assert!(doc.undo());
+        assert_eq!(doc.text(), SHOW);
+
+        // An empty step leaves nothing behind.
+        doc.begin_step();
+        doc.end_step();
+        assert!(doc.steps().is_empty());
+        assert!(!doc.undo());
     }
 
     #[test]
@@ -990,7 +1110,7 @@ mod tests {
             Node::Array { items, .. } => {
                 out.push((at.clone(), true));
                 for (i, item) in items.iter().enumerate() {
-                    pointers(&item.node, at.then(Step::Index(i)), out);
+                    pointers(&item.node, at.then(Part::Index(i)), out);
                 }
             }
             Node::Object { items, .. } => {
@@ -998,7 +1118,7 @@ mod tests {
                 for item in items {
                     pointers(
                         &item.node,
-                        at.then(Step::Key(item.key_name().unwrap())),
+                        at.then(Part::Key(item.key_name().unwrap())),
                         out,
                     );
                 }
@@ -1016,7 +1136,14 @@ mod tests {
         let mut doc = Document::parse(&original).unwrap();
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         let mut made = 0;
+        let mut steps = 0;
         while made < 1000 {
+            // Now and then a run of edits is one step.
+            if !doc.in_step() && rng.below(5) == 0 {
+                doc.begin_step();
+            } else if doc.in_step() && rng.below(3) == 0 {
+                doc.end_step();
+            }
             let mut all = Vec::new();
             pointers(&doc.root, Pointer::default(), &mut all);
             let (path, container) = all[rng.below(all.len())].clone();
@@ -1030,8 +1157,8 @@ mod tests {
                 0 if !path.0.is_empty() => doc.set(&path, value).is_ok(),
                 1 if container => {
                     let step = match doc.get(&path) {
-                        Some(Node::Array { items, .. }) => Step::Index(rng.below(items.len() + 1)),
-                        _ => Step::Key(format!("n{}", rng.below(50))),
+                        Some(Node::Array { items, .. }) => Part::Index(rng.below(items.len() + 1)),
+                        _ => Part::Key(format!("n{}", rng.below(50))),
                     };
                     doc.insert(&path.then(step), value).is_ok()
                 }
@@ -1040,12 +1167,19 @@ mod tests {
             };
             if done {
                 made += 1;
+                if !doc.in_step() {
+                    steps = doc.steps().len();
+                }
                 // The text always re-reads to the same tree.
                 let again = Document::parse(&doc.text()).unwrap();
                 assert_eq!(again.value(), doc.value(), "after {made} edits");
             }
         }
-        assert_eq!(doc.edits().len(), 1000);
+        if doc.in_step() {
+            doc.end_step();
+        }
+        assert!(doc.steps().len() < 1000, "some edits joined into steps");
+        assert!(doc.steps().len() >= steps);
         let edited = doc.text();
         while doc.undo() {}
         assert_eq!(doc.text(), original);

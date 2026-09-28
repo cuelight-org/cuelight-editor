@@ -5,6 +5,17 @@
   <title>cuelight editor</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link data-trunk rel="rust" href="../crates/cuelight-editor/Cargo.toml" data-bin="cuelight-editor" data-wasm-opt="z">
+  <script>
+    // The browser's shortcuts stay the browser's: the window's canvas
+    // prevents the default of every key it sees, which would eat the
+    // developer tools and reload. Those never reach it.
+    addEventListener("keydown", (event) => {
+      const key = event.key.length === 1 ? event.key.toUpperCase() : event.key;
+      const tools = (event.ctrlKey || event.metaKey) && event.shiftKey && key.length === 1 && "ICJKE".includes(key);
+      const reload = event.ctrlKey && key === "R";
+      if (key === "F12" || key === "F5" || tools || reload) event.stopImmediatePropagation();
+    }, true);
+  </script>
   <style>
     html, body { margin: 0; height: 100%; background: #0b0d11; }
     canvas { display: block; width: 100vw; height: 100vh; outline: none; }

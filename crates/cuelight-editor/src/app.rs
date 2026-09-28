@@ -25,6 +25,11 @@ pub struct App {
     /// The sound device, opened for a show that has sounds (desktop only).
     #[cfg(not(target_arch = "wasm32"))]
     audio: Option<cuelight_audio::Output>,
+    /// The browser's audio, made for a show that has sounds. Shared with
+    /// the task that decodes them, which holds it only across each
+    /// decode; a frame that finds it busy skips its sound.
+    #[cfg(target_arch = "wasm32")]
+    audio: Option<std::rc::Rc<std::cell::RefCell<cuelight_audio::WebAudio>>>,
     /// Where the open show came from, and what it holds.
     source: String,
     summary: Summary,
@@ -110,13 +115,16 @@ pub enum Message {
     ZoomBy(f32),
     /// A split between two areas dragged.
     Resized(pane_grid::ResizeEvent),
+    /// The browser decoded the show's sounds: each name with its length,
+    /// or why it did not decode.
+    #[cfg(target_arch = "wasm32")]
+    SoundsReady(Vec<(String, Result<f64, String>)>),
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
         let app = Self {
             session: None,
-            #[cfg(not(target_arch = "wasm32"))]
             audio: None,
             source: String::new(),
             summary: Summary::default(),
@@ -167,6 +175,16 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // A browser keeps a page silent until someone acts on it; any
+        // message but a frame is such an act.
+        #[cfg(target_arch = "wasm32")]
+        if !matches!(message, Message::Tick(_))
+            && let Some(audio) = &self.audio
+            && let Ok(audio) = audio.try_borrow()
+            && !audio.running()
+        {
+            audio.resume();
+        }
         let task = self.handle(message);
         self.refresh_fields();
         task
@@ -213,13 +231,19 @@ impl App {
                     Some(Picked::File { name, bytes }) => {
                         self.open(Opened::from_bytes(&name, &bytes))
                     }
-                    None => {}
+                    None => Task::none(),
                 }
-                Task::none()
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Message::Dropped(path) => {
-                self.open(Opened::from_path(&path));
+            Message::Dropped(path) => self.open(Opened::from_path(&path)),
+            #[cfg(target_arch = "wasm32")]
+            Message::SoundsReady(sounds) => {
+                for (name, result) in sounds {
+                    if let Err(error) = result {
+                        self.status = format!("sound {name} did not decode: {error}");
+                        log::warn!("{}", self.status);
+                    }
+                }
                 Task::none()
             }
             Message::Tick(now) => {
@@ -352,7 +376,7 @@ impl App {
         }
     }
 
-    fn open(&mut self, result: Result<Opened, opened::OpenError>) {
+    fn open(&mut self, result: Result<Opened, opened::OpenError>) -> Task<Message> {
         match result {
             Ok(opened) => {
                 self.status = format!("opened {}", opened.source);
@@ -362,18 +386,21 @@ impl App {
                     engine,
                     summary,
                     driver,
+                    sound_files,
                     sounds,
                 } = opened;
                 self.source = source;
                 self.summary = summary;
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
                 self.edits.clear();
-                self.listen(&sounds);
+                let task = self.listen(&sounds, sound_files);
                 self.session = Some(Session::new(engine, driver));
+                task
             }
             Err(error) => {
                 self.status = format!("could not open: {error}");
                 log::warn!("{}", self.status);
+                Task::none()
             }
         }
     }
@@ -381,9 +408,13 @@ impl App {
     /// Give the sound device the show's sounds, opening it for the first
     /// show that has any.
     #[cfg(not(target_arch = "wasm32"))]
-    fn listen(&mut self, sounds: &[(String, std::sync::Arc<cuelight_editor_core::opened::Sound>)]) {
+    fn listen(
+        &mut self,
+        sounds: &[(String, std::sync::Arc<cuelight_editor_core::opened::Sound>)],
+        _files: Vec<cuelight_editor_core::opened::SoundFile>,
+    ) -> Task<Message> {
         if sounds.is_empty() {
-            return;
+            return Task::none();
         }
         if self.audio.is_none() {
             self.audio = cuelight_audio::Output::open()
@@ -395,13 +426,48 @@ impl App {
                 audio.set_sound(name, sound.clone());
             }
         }
+        Task::none()
     }
 
+    /// Have the browser decode the show's sounds, one after the other,
+    /// making its audio for the first show that has any. The lengths the
+    /// engine needs are registered already, from decoding them here.
+    ///
+    /// The audio is held across each decode on purpose: the page is
+    /// single-threaded, so nothing waits on the borrow, and a frame that
+    /// finds it busy skips its sound rather than block.
     #[cfg(target_arch = "wasm32")]
+    #[allow(clippy::await_holding_refcell_ref)]
     fn listen(
         &mut self,
         _sounds: &[(String, std::sync::Arc<cuelight_editor_core::opened::Sound>)],
-    ) {
+        files: Vec<cuelight_editor_core::opened::SoundFile>,
+    ) -> Task<Message> {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        if files.is_empty() {
+            return Task::none();
+        }
+        if self.audio.is_none() {
+            self.audio = cuelight_audio::WebAudio::new()
+                .map_err(|error| log::warn!("no sound: {error:?}"))
+                .ok()
+                .map(|audio| Rc::new(RefCell::new(audio)));
+        }
+        let Some(audio) = self.audio.clone() else {
+            return Task::none();
+        };
+        Task::perform(
+            async move {
+                let mut done = Vec::new();
+                for file in files {
+                    let result = audio.borrow_mut().decode(&file.name, &file.bytes).await;
+                    done.push((file.name, result.map_err(|e| format!("{e:?}"))));
+                }
+                done
+            },
+            Message::SoundsReady,
+        )
     }
 
     /// Play what the show sounds like now.
@@ -414,12 +480,28 @@ impl App {
                 Err(error) => log::warn!("voices: {error}"),
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        if let (Some(audio), Some(session)) = (&self.audio, &self.session)
+            && let Ok(mut audio) = audio.try_borrow_mut()
+        {
+            let engine = session.engine.lock().expect("the engine is not poisoned");
+            match engine.voices() {
+                Ok(voices) => audio.apply(&voices),
+                Err(error) => log::warn!("voices: {error}"),
+            }
+        }
     }
 
     /// Silence, for a scrub or a pause.
     fn hush(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(audio) = &self.audio {
+            audio.apply(&[]);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(audio) = &self.audio
+            && let Ok(mut audio) = audio.try_borrow_mut()
+        {
             audio.apply(&[]);
         }
     }

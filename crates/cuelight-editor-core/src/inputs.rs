@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use cuelight::{DigitDisplay, Layer, LayerKind, Show, Value};
+use cuelight_core::{DigitDisplay, Layer, LayerKind, Show, Value};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Inputs {

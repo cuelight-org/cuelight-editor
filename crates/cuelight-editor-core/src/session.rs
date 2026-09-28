@@ -8,7 +8,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use cuelight::{Engine, Event, Value};
+use cuelight::Engine;
+use cuelight_core::{Event, Value};
 use cuelight_loader::{Driver, DriverPlayer, Live, Step};
 use std::time::Duration;
 
@@ -204,7 +205,7 @@ impl Session {
         if self.driving
             && let Some(player) = &mut self.player
         {
-            player.advance(&mut engine, dt);
+            player.advance(engine.core_mut(), dt);
         }
         engine.advance_to(time);
         drop(engine);
@@ -230,7 +231,7 @@ impl Session {
         let to = to.max(0.0);
         let mut engine = self.engine.lock().expect("the engine is not poisoned");
         let driver = self.driving.then(|| self.driver.clone()).flatten();
-        self.player = cuelight_loader::seek(&mut engine, driver, &self.live, to, 60.0);
+        self.player = cuelight_loader::seek(engine.core_mut(), driver, &self.live, to, 60.0);
         drop(engine);
         self.time = to;
         self.anchor = now.checked_sub(Duration::from_secs_f64(to));

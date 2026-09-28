@@ -11,12 +11,16 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Point both engine crates at main; the pinned revs in Cargo.toml stay.
+  # Point every engine crate at main; the pinned revs in Cargo.toml stay.
   CARGO_PATCH: >-
     --config patch."https://github.com/francisdb/cuelight".cuelight.git="https://github.com/francisdb/cuelight"
     --config patch."https://github.com/francisdb/cuelight".cuelight.branch="main"
+    --config patch."https://github.com/francisdb/cuelight".cuelight-core.git="https://github.com/francisdb/cuelight"
+    --config patch."https://github.com/francisdb/cuelight".cuelight-core.branch="main"
     --config patch."https://github.com/francisdb/cuelight".cuelight-loader.git="https://github.com/francisdb/cuelight"
     --config patch."https://github.com/francisdb/cuelight".cuelight-loader.branch="main"
+    --config patch."https://github.com/francisdb/cuelight".cuelight-audio.git="https://github.com/francisdb/cuelight"
+    --config patch."https://github.com/francisdb/cuelight".cuelight-audio.branch="main"
 
 jobs:
   native:

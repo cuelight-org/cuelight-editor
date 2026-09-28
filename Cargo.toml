@@ -22,7 +22,7 @@ cuelight-audio = { git = "https://github.com/francisdb/cuelight", rev = "ded0627
 iced = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2", features = ["image-without-codecs", "svg"] }
 iced_test = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2" }
 log = "0.4"
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [profile.release]
 opt-level = 3

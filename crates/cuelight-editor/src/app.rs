@@ -18,7 +18,7 @@ use iced::{Element, Fill, Size, Subscription, Task, Theme};
 use crate::dialog::{self, Picked};
 use crate::stage::Stage;
 use cuelight_editor_core::opened::{self, Opened, Summary};
-use cuelight_editor_core::session::{Session, What};
+use cuelight_editor_core::session::{Session, Step, What};
 
 pub struct App {
     session: Option<Session>,
@@ -759,6 +759,18 @@ impl App {
                     What::Fired(t) => format!("{:6.2}  fired {t}", item.at),
                     What::Set(n, v) => format!("{:6.2}  {n} = {}", item.at, inputs::show_value(v)),
                     What::Event(t) => format!("{:6.2}  show fired {t}", item.at),
+                    What::Driver(Step::Trigger { trigger }) => {
+                        format!("{:6.2}  driver fired {trigger}", item.at)
+                    }
+                    What::Driver(Step::Set { set }) => {
+                        let sets = set
+                            .iter()
+                            .map(|(n, v)| format!("{n} = {}", inputs::show_value(v)))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{:6.2}  driver set {sets}", item.at)
+                    }
+                    What::Driver(_) => continue,
                 };
                 panel = panel.push(text(line).size(12));
             }
@@ -835,6 +847,7 @@ pub fn theme(_: &App) -> Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuelight_core::Value;
     use iced_test::simulator;
 
     #[test]
@@ -975,6 +988,53 @@ mod tests {
             0.0,
             "a step back stops at the start"
         );
+    }
+
+    #[test]
+    fn a_variable_set_by_hand_is_replayed_and_driver_steps_are_logged() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        let lit = |app: &App| app.session.as_ref().unwrap().value("lit");
+
+        // The driver lights the dot at 0.5 s; a hand lights it at 0.3 s.
+        let _ = app.update(Message::Seek(0.3));
+        let _ = app.update(Message::Set("lit".into(), "true".into()));
+        assert_eq!(lit(&app), Some(Value::Bool(true)));
+        let _ = app.update(Message::Seek(0.0));
+        assert_eq!(
+            lit(&app),
+            Some(Value::Bool(false)),
+            "before the hand set it"
+        );
+        let _ = app.update(Message::Seek(0.4));
+        assert_eq!(
+            lit(&app),
+            Some(Value::Bool(true)),
+            "a scrub replays the set"
+        );
+
+        // Played, the driver's steps are logged at their own instants.
+        let _ = app.update(Message::Seek(0.0));
+        let _ = app.update(Message::TogglePause);
+        let start = Instant::now();
+        let _ = app.update(Message::Tick(start));
+        let _ = app.update(Message::Tick(start + std::time::Duration::from_millis(600)));
+        let session = app.session.as_ref().unwrap();
+        let driver: Vec<_> = session
+            .happened
+            .iter()
+            .filter(|h| matches!(h.what, What::Driver(_)))
+            .collect();
+        assert_eq!(driver.len(), 2, "{:?}", session.happened);
+        assert_eq!(driver[0].at, 0.5);
+        assert!(
+            matches!(&driver[0].what, What::Driver(Step::Trigger { trigger }) if trigger == "go")
+        );
+        assert!(matches!(&driver[1].what, What::Driver(Step::Set { .. })));
     }
 
     #[test]

@@ -10,9 +10,10 @@ use std::sync::{Arc, Mutex};
 
 use cuelight::Engine;
 use cuelight_core::{Event, Value};
-use cuelight_loader::{Driver, DriverPlayer, Live, Step};
+use cuelight_loader::{Applied, Driver, DriverPlayer, Live};
 use std::time::Duration;
 
+pub use cuelight_loader::Step;
 pub use web_time::Instant;
 
 pub struct Session {
@@ -20,8 +21,8 @@ pub struct Session {
     pub engine: Arc<Mutex<Engine>>,
     driver: Option<Driver>,
     player: Option<DriverPlayer>,
-    /// What the host fired live, replayed by a seek (nothing yet: keys
-    /// and presses come with the inputs panel).
+    /// What the host fired and set live, replayed by a seek at the
+    /// instants it happened.
     live: Live,
     anchor: Option<Instant>,
     /// The show's time, in seconds.
@@ -33,8 +34,8 @@ pub struct Session {
     pub recording: bool,
     /// Whether the driver plays. Off, the show waits for the hand.
     pub driving: bool,
-    /// What happened lately, newest last: inputs given and events the
-    /// show fired, with the show time of each.
+    /// What happened lately, newest last: inputs given, driver steps
+    /// applied and events the show fired, with the show time of each.
     pub happened: VecDeque<Happened>,
 }
 
@@ -53,6 +54,8 @@ pub enum What {
     Set(String, Value),
     /// A trigger the show fired itself: an `on_end`, a scene entered.
     Event(String),
+    /// A step of the driver, applied at its own instant.
+    Driver(Step),
 }
 
 /// How much of the recent past the panel shows.
@@ -100,13 +103,16 @@ impl Session {
         self.fired(trigger);
     }
 
-    /// Set a variable as a host would, now. Not replayed by a scrub yet
-    /// (cuelight#222).
+    /// Set a variable as a host would, now; recorded, so a scrub replays
+    /// it where it was set.
     pub fn set(&mut self, name: &str, value: Value) {
         self.engine
             .lock()
             .expect("the engine is not poisoned")
             .set_variable(name, value.clone());
+        if self.recording {
+            self.live.record_set(self.time, name, value.clone());
+        }
         self.note(What::Set(name.to_owned(), value));
     }
 
@@ -180,10 +186,11 @@ impl Session {
     }
 
     fn note(&mut self, what: What) {
-        self.happened.push_back(Happened {
-            at: self.time,
-            what,
-        });
+        self.note_at(self.time, what);
+    }
+
+    fn note_at(&mut self, at: f64, what: What) {
+        self.happened.push_back(Happened { at, what });
         while self.happened.len() > KEPT {
             self.happened.pop_front();
         }
@@ -202,15 +209,19 @@ impl Session {
             return;
         }
         let mut engine = self.engine.lock().expect("the engine is not poisoned");
-        if self.driving
-            && let Some(player) = &mut self.player
-        {
-            player.advance(engine.core_mut(), dt);
-        }
+        let applied = match &mut self.player {
+            Some(player) if self.driving => player.advance(engine.core_mut(), dt),
+            _ => Vec::new(),
+        };
         engine.advance_to(time);
         drop(engine);
         self.time = time;
         self.revision += 1;
+        for Applied { at, step } in applied {
+            if !matches!(step, Step::Wait { .. }) {
+                self.note_at(at, What::Driver(step));
+            }
+        }
         self.collect_events();
     }
 
@@ -226,12 +237,13 @@ impl Session {
     }
 
     /// Put the show at `to` seconds, by replaying its inputs from the
-    /// start. Playing goes on from there; paused stays paused there.
+    /// start, each at its own instant. Playing goes on from there;
+    /// paused stays paused there.
     pub fn seek(&mut self, to: f64, now: Instant) {
         let to = to.max(0.0);
         let mut engine = self.engine.lock().expect("the engine is not poisoned");
         let driver = self.driving.then(|| self.driver.clone()).flatten();
-        self.player = cuelight_loader::seek(engine.core_mut(), driver, &self.live, to, 60.0);
+        self.player = cuelight_loader::seek(engine.core_mut(), driver, &self.live, to);
         drop(engine);
         self.time = to;
         self.anchor = now.checked_sub(Duration::from_secs_f64(to));

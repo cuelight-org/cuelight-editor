@@ -50,6 +50,30 @@ fn a_loose_document_opens_without_its_assets() {
 }
 
 #[test]
+fn an_unfinished_show_opens_with_what_it_dropped() {
+    let opened = Opened::from_bytes(
+        "show.json",
+        br##"{ "format": 1, "name": "x", "size": [8, 8], "layers": [
+              { "name": "ok", "type": "shape", "shape": { "rect": [0, 0, 4, 4] }, "fill": "#FFFFFF" },
+              { "name": "odd", "type": "shape", "shape": { "rect": [0, 0, 4, 4] }, "x": "far" }
+            ] }"##,
+    )
+    .unwrap();
+    assert_eq!(opened.summary.layers, 1, "the layer that parses is kept");
+    assert_eq!(
+        opened.summary.problems.len(),
+        1,
+        "{:?}",
+        opened.summary.problems
+    );
+    assert!(
+        opened.summary.problems[0].starts_with("layers[1]"),
+        "{:?}",
+        opened.summary.problems
+    );
+}
+
+#[test]
 fn a_newer_format_is_refused_with_its_number() {
     let error = Opened::from_bytes(
         "show.json",

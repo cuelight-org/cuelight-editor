@@ -60,8 +60,6 @@ Two crates in a workspace:
     wants.
   - `session.rs` plays a show: the engine, its driver and an anchored
     clock, as the players keep time.
-  - `examples/seek_timing.rs` measures what a seek and a reload cost:
-    `cargo run --release -p cuelight-editor-core --example seek_timing -- <show>`.
 - `crates/cuelight-editor` is the window:
   - `stage.rs` draws the show: an iced shader widget in which the engine's
     presenter and vello render the frame into a texture, blitted into the

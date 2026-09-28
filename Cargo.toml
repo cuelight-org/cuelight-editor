@@ -13,10 +13,10 @@ publish = false
 # Every pin in one place. The engine crates move together, and iced with
 # them when wgpu changes (see README).
 [workspace.dependencies]
-cuelight = { git = "https://github.com/francisdb/cuelight", rev = "63756e43a723fe0cf78ad75cda2d5d6d9b25270c" }
-cuelight-core = { git = "https://github.com/francisdb/cuelight", rev = "63756e43a723fe0cf78ad75cda2d5d6d9b25270c" }
-cuelight-loader = { git = "https://github.com/francisdb/cuelight", rev = "63756e43a723fe0cf78ad75cda2d5d6d9b25270c" }
-cuelight-audio = { git = "https://github.com/francisdb/cuelight", rev = "63756e43a723fe0cf78ad75cda2d5d6d9b25270c", default-features = false }
+cuelight = { git = "https://github.com/francisdb/cuelight", rev = "6630ae468943629b35abffa7da9f3abd8b3cac4f" }
+cuelight-core = { git = "https://github.com/francisdb/cuelight", rev = "6630ae468943629b35abffa7da9f3abd8b3cac4f" }
+cuelight-loader = { git = "https://github.com/francisdb/cuelight", rev = "6630ae468943629b35abffa7da9f3abd8b3cac4f" }
+cuelight-audio = { git = "https://github.com/francisdb/cuelight", rev = "6630ae468943629b35abffa7da9f3abd8b3cac4f", default-features = false }
 # iced is unreleased on the wgpu the engine uses (29), so it is pinned to
 # a commit of master: the last on wgpu 29 that we checked.
 iced = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2" }

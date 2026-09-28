@@ -827,6 +827,7 @@ dependencies = [
  "iced_test",
  "js-sys",
  "log",
+ "png 0.18.1",
  "rfd",
  "vello",
  "wasm-bindgen",

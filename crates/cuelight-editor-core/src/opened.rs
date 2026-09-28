@@ -18,6 +18,7 @@ use cuelight_loader::Options;
 pub use cuelight_loader::SoundFile;
 
 use crate::assets::{self, Asset, Names};
+use crate::document::Document;
 
 /// What was opened, where from, and what it contained.
 pub struct Opened {
@@ -39,6 +40,8 @@ pub struct Opened {
     pub files: BTreeMap<String, Vec<u8>>,
     /// The assets the engine registered, with their facts and uses.
     pub library: Vec<Asset>,
+    /// The show document as the editor edits it, text and all.
+    pub document: Document,
 }
 
 /// The facts about a show worth showing before there is a stage.
@@ -132,6 +135,7 @@ impl Opened {
                 .iter()
                 .map(|f| format!("artwork asks for font {f:?}, which the show does not ship")),
         );
+        let document = document_of(&files)?;
         Ok(Self {
             source: path.display().to_string(),
             engine,
@@ -141,6 +145,7 @@ impl Opened {
             sounds,
             files,
             library,
+            document,
         })
     }
 
@@ -186,6 +191,7 @@ impl Opened {
                 .iter()
                 .map(|f| format!("artwork asks for font {f:?}, which the show does not ship")),
         );
+        let document = document_of(&files)?;
         Ok(Self {
             source: name.to_owned(),
             engine,
@@ -195,8 +201,18 @@ impl Opened {
             sounds,
             files,
             library,
+            document,
         })
     }
+}
+
+/// The show document among the files, as the editor edits it.
+fn document_of(files: &BTreeMap<String, Vec<u8>>) -> Result<Document, OpenError> {
+    let bytes = files
+        .get("show.json")
+        .ok_or_else(|| OpenError::Load("no show.json".to_owned()))?;
+    let text = String::from_utf8_lossy(bytes);
+    Document::parse(&text).map_err(|e| OpenError::Load(format!("show.json: {e}")))
 }
 
 /// Decode the show's sounds and tell the engine how long each is, so a

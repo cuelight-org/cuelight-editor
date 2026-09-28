@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use cuelight::Engine;
-use cuelight_core::{Event, Value};
+use cuelight_core::{Event, Finding, Value};
 use cuelight_loader::{Applied, Driver, DriverPlayer, Live};
 use std::time::Duration;
 
@@ -255,6 +255,29 @@ impl Session {
             .lock()
             .expect("the engine is not poisoned")
             .drain_events();
+    }
+
+    /// The show changed under the session: load the new document, as
+    /// much of it as loads, and put it back at the playhead by replaying
+    /// its inputs. Assets stay registered, so this costs the parse and
+    /// the replay. What the load dropped comes back as findings; only a
+    /// text that is no document at all is an error, and then the show
+    /// that was playing stays.
+    pub fn reload(
+        &mut self,
+        text: &str,
+        now: Instant,
+    ) -> Result<Vec<Finding>, cuelight_core::Error> {
+        let findings = self
+            .engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .load_show_tolerant(text)?;
+        let time = self.time;
+        let paused = self.paused;
+        self.seek(time, now);
+        self.paused = paused;
+        Ok(findings)
     }
 
     /// Move by `dt` seconds, forwards or back, and stay paused there.

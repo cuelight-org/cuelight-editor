@@ -1,5 +1,9 @@
 //! A show as the editor holds it once opened: the engine it loaded into
 //! and a summary of what came with it.
+//!
+//! A show is opened leniently: what cannot be understood is dropped and
+//! reported, so an unfinished show still shows what it has. Only a show
+//! with no document at all fails to open.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -10,6 +14,7 @@ use std::sync::Arc;
 use cuelight::Engine;
 pub use cuelight_audio::Sound;
 use cuelight_core::{Layer, LayerKind, Show};
+use cuelight_loader::Options;
 pub use cuelight_loader::SoundFile;
 
 /// What was opened, where from, and what it contained.
@@ -51,8 +56,9 @@ pub struct Summary {
     pub videos: usize,
     /// The driver's steps, and whether it loops; `None` without a driver.
     pub driver: Option<(usize, bool)>,
-    /// Everything the load had to say: the engine's warnings, assets the
-    /// build could not read, font families the artwork asked for.
+    /// Everything the load had to say: what it dropped and where, the
+    /// engine's warnings, assets the build could not read, font families
+    /// the artwork asked for.
     pub problems: Vec<String>,
 }
 
@@ -85,8 +91,8 @@ impl Opened {
         let document = document_on_disk(path)?;
         check_format(&document)?;
         let mut engine = Engine::new();
-        let loaded =
-            cuelight_loader::load(&mut engine, path).map_err(|e| OpenError::Load(e.to_string()))?;
+        let loaded = cuelight_loader::load_with(&mut engine, path, &Options::lenient())
+            .map_err(|e| OpenError::Load(e.to_string()))?;
         let mut summary = summarize(&engine);
         summary.images = loaded.images.len();
         summary.vectors = loaded.vectors.len();
@@ -94,6 +100,9 @@ impl Opened {
         summary.videos = loaded.videos.len();
         summary.driver = loaded.driver.as_ref().map(|d| (d.steps.len(), d.looping));
         let sounds = decode_sounds(&mut engine, &loaded.sounds, &mut summary);
+        summary
+            .problems
+            .extend(loaded.findings.iter().map(ToString::to_string));
         summary
             .problems
             .extend(loaded.skipped.iter().map(|p| format!("skipped {p}")));
@@ -126,14 +135,18 @@ impl Opened {
             .ok_or_else(|| OpenError::Load(format!("{name} holds no show.json")))?;
         check_format(&String::from_utf8_lossy(document))?;
         let mut engine = Engine::new();
-        let loaded = cuelight_loader::load_from_memory(&mut engine, &files)
-            .map_err(|e| OpenError::Load(e.to_string()))?;
+        let loaded =
+            cuelight_loader::load_from_memory_with(&mut engine, &files, &Options::lenient())
+                .map_err(|e| OpenError::Load(e.to_string()))?;
         let mut summary = summarize(&engine);
         summary.images = loaded.images.len();
         summary.vectors = loaded.vectors.len();
         summary.fonts = loaded.fonts.len();
         summary.driver = loaded.driver.as_ref().map(|d| (d.steps.len(), d.looping));
         let sounds = decode_sounds(&mut engine, &loaded.sounds, &mut summary);
+        summary
+            .problems
+            .extend(loaded.findings.iter().map(ToString::to_string));
         summary
             .problems
             .extend(loaded.skipped.iter().map(|p| format!("skipped {p}")));

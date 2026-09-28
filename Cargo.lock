@@ -761,7 +761,7 @@ dependencies = [
 [[package]]
 name = "cuelight"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=6630ae468943629b35abffa7da9f3abd8b3cac4f#6630ae468943629b35abffa7da9f3abd8b3cac4f"
+source = "git+https://github.com/francisdb/cuelight?rev=ded0627408eba2f6e6a72bbef17b50cdfca11583#ded0627408eba2f6e6a72bbef17b50cdfca11583"
 dependencies = [
  "cuelight-core",
  "png",
@@ -774,7 +774,7 @@ dependencies = [
 [[package]]
 name = "cuelight-audio"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=6630ae468943629b35abffa7da9f3abd8b3cac4f#6630ae468943629b35abffa7da9f3abd8b3cac4f"
+source = "git+https://github.com/francisdb/cuelight?rev=ded0627408eba2f6e6a72bbef17b50cdfca11583#ded0627408eba2f6e6a72bbef17b50cdfca11583"
 dependencies = [
  "cpal",
  "cuelight-core",
@@ -790,7 +790,7 @@ dependencies = [
 [[package]]
 name = "cuelight-core"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=6630ae468943629b35abffa7da9f3abd8b3cac4f#6630ae468943629b35abffa7da9f3abd8b3cac4f"
+source = "git+https://github.com/francisdb/cuelight?rev=ded0627408eba2f6e6a72bbef17b50cdfca11583#ded0627408eba2f6e6a72bbef17b50cdfca11583"
 dependencies = [
  "serde",
  "serde_json",
@@ -837,7 +837,7 @@ dependencies = [
 [[package]]
 name = "cuelight-loader"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=6630ae468943629b35abffa7da9f3abd8b3cac4f#6630ae468943629b35abffa7da9f3abd8b3cac4f"
+source = "git+https://github.com/francisdb/cuelight?rev=ded0627408eba2f6e6a72bbef17b50cdfca11583#ded0627408eba2f6e6a72bbef17b50cdfca11583"
 dependencies = [
  "cuelight",
  "cuelight-core",

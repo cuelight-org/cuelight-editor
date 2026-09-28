@@ -116,7 +116,7 @@ pub fn property_name(property: Property) -> String {
 
 /// Every property a layer might have, in the order the inspector
 /// lists them: placement first, then appearance, then what the kind adds.
-pub const PROPERTIES: [Property; 17] = [
+pub const PROPERTIES: [Property; 18] = [
     Property::X,
     Property::Y,
     Property::Rotation,
@@ -128,6 +128,7 @@ pub const PROPERTIES: [Property; 17] = [
     Property::Tint,
     Property::Text,
     Property::Font,
+    Property::Reveal,
     Property::Frame,
     Property::TileX,
     Property::TileY,

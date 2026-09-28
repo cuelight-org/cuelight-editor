@@ -88,6 +88,7 @@ impl<Message> shader::Program<Message> for Stage<Message> {
                     show.size,
                     target,
                     engine.scaling(),
+                    cuelight::render::Fit::Contain,
                     [f64::from(at.x), f64::from(at.y)],
                 )?;
                 let message = if modifiers.control() {
@@ -145,6 +146,7 @@ impl<Message> shader::Program<Message> for Stage<Message> {
             show.size,
             target,
             engine.scaling(),
+            cuelight::render::Fit::Contain,
             [f64::from(at.x), f64::from(at.y)],
         )
         .is_some_and(|point| engine.pressed(point).is_some());
@@ -337,7 +339,12 @@ impl shader::Primitive for Frame {
             if !self.selection.is_empty()
                 && let Some(show) = engine.show()
             {
-                let placement = cuelight::render::fit(show.size, size, engine.scaling());
+                let placement = cuelight::render::fit(
+                    show.size,
+                    size,
+                    engine.scaling(),
+                    cuelight::render::Fit::Contain,
+                );
                 outline(
                     &mut presented.scene,
                     &boxes(&engine, &self.selection),

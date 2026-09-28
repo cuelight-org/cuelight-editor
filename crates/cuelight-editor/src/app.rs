@@ -36,6 +36,9 @@ pub struct Options {
     /// Pick the layer under this canvas point once the show is open.
     #[arg(long, value_name = "X,Y", value_parser = parse_point)]
     pub pick: Option<[f64; 2]>,
+    /// Fire a trigger once the show is open; repeatable, in order.
+    #[arg(long, value_name = "TRIGGER")]
+    pub trigger: Vec<String>,
     /// Open no sound device.
     #[arg(long)]
     pub silent: bool,
@@ -264,11 +267,14 @@ impl App {
                 Some(path) => Task::done(Message::Dropped(path)),
                 None => Task::none(),
             };
-            let pick = match options.pick {
-                Some(point) => Task::done(Message::Pick(point, Pick::default())),
-                None => Task::none(),
-            };
-            (app, open.chain(pick))
+            let mut then = Task::none();
+            for trigger in options.trigger {
+                then = then.chain(Task::done(Message::Fire(trigger)));
+            }
+            if let Some(point) = options.pick {
+                then = then.chain(Task::done(Message::Pick(point, Pick::default())));
+            }
+            (app, open.chain(then))
         }
         // A page asked to open a show (`?show=<url>`) fetches it.
         #[cfg(target_arch = "wasm32")]
@@ -405,6 +411,7 @@ impl App {
                     && self.inputs.keys.contains_key(name.as_str())
                 {
                     session.key(&name);
+                    self.wake();
                     return Task::none();
                 }
                 match name.as_str() {
@@ -432,12 +439,14 @@ impl App {
             Message::Press(at) => {
                 if let Some(session) = &mut self.session {
                     session.press(at);
+                    self.wake();
                 }
                 Task::none()
             }
             Message::Fire(trigger) => {
                 if let Some(session) = &mut self.session {
                     session.fire(&trigger);
+                    self.wake();
                 }
                 Task::none()
             }
@@ -449,6 +458,7 @@ impl App {
                 self.edits.remove(&name);
                 if let Some(session) = &mut self.session {
                     session.set(&name, inputs::parse_value(&text));
+                    self.wake();
                 }
                 Task::none()
             }
@@ -544,6 +554,16 @@ impl App {
                 self.panes.resize(split, ratio);
                 Task::none()
             }
+        }
+    }
+
+    /// An input given by hand is a request to see the show react, so it
+    /// plays a paused show; what it started then runs.
+    fn wake(&mut self) {
+        if let Some(session) = &mut self.session
+            && session.paused
+        {
+            session.toggle_pause(Instant::now());
         }
     }
 
@@ -1613,6 +1633,7 @@ mod tests {
                 show: Some("deck".into()),
                 zoom: Some(2.0),
                 pick: Some([10.0, 20.0]),
+                trigger: Vec::new(),
                 silent: true,
                 screenshot: Some("out.png".into()),
             }
@@ -1641,7 +1662,7 @@ mod tests {
         let mut ui = simulator(app.view());
         assert!(ui.find("mini (format 1)").is_ok());
         assert!(ui.find("64 x 32").is_ok());
-        assert!(ui.find("Play").is_ok(), "an opened show stands at 0");
+        assert!(ui.find("Play").is_ok(), "an opened show is paused at 0");
     }
 
     #[test]
@@ -1950,17 +1971,17 @@ mod tests {
             keyboard::Modifiers::empty(),
         ));
         let session = app.session.as_ref().unwrap();
-        assert!(session.paused, "the show still stands where it opened");
+        assert!(!session.paused, "an input by hand plays the paused show");
         assert!(
             matches!(session.happened.back().map(|h| &h.what), Some(What::Fired(t)) if t == "go")
         );
 
-        // With Ctrl, the editor's own Space plays.
+        // With Ctrl, the editor's own Space pauses.
         let _ = app.update(Message::KeyPressed(
             keyboard::Key::Named(keyboard::key::Named::Space),
             keyboard::Modifiers::CTRL,
         ));
-        assert!(!app.session.as_ref().unwrap().paused);
+        assert!(app.session.as_ref().unwrap().paused);
 
         // A press on the dot fires `go`; one on the floor fires nothing.
         let _ = app.update(Message::Press([32.0, 14.0]));

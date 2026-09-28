@@ -70,7 +70,7 @@ impl Session {
             live: Live::default(),
             anchor: None,
             time: 0.0,
-            // A show opens standing at 0; playing is asked for.
+            // A show opens paused at 0; playing is asked for.
             paused: true,
             revision: 0,
             recording: true,

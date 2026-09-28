@@ -23,13 +23,14 @@ from the bar, or drop one on the window. The show plays with its
 plays, R restarts, `,` and `.` step a frame (a second with Shift), and
 the playhead scrubs by replaying the show's inputs.
 
-The panel on the left is how a show is driven: its triggers as
-buttons, its variables as fields and toggles, its own values as
-readouts, and what happened lately. Keys the show names, and presses on
-its pressable layers, go to the show first (Ctrl reaches the editor's
-own shortcuts); what you fire is recorded, so scrubbing back replays it.
-The Driver switch in the bar turns the show's own driver off, so nothing
-happens until you make it.
+The inputs panel is how a show is driven: its triggers as buttons, its
+variables as fields and toggles, its own values as readouts, and what
+happened lately. Keys the show names go to the show first (Ctrl reaches
+the editor's own shortcuts); a click on the stage picks the layer under
+it, and Ctrl-click is the show's own press. A show opens paused at 0,
+and anything you fire by hand starts it; what you fire is recorded, so
+scrubbing back replays it. The Driver switch in the bar turns the show's
+own driver off, so nothing happens until you make it.
 
 ### In the browser
 

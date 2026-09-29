@@ -11,8 +11,9 @@ use cuelight_editor_core::session::Instant;
 use cuelight_editor_core::specimen::{self, Drawn, Sizing};
 use cuelight_editor_core::tree::{self, Row};
 use iced::keyboard;
+use iced::widget::operation::{Animation, scroll_to, snap_to};
 use iced::widget::pane_grid::{self, Axis, Configuration};
-use iced::widget::scrollable::{Direction, Scrollbar};
+use iced::widget::scrollable::{AbsoluteOffset, Direction, RelativeOffset, Scrollbar};
 use iced::widget::text::Wrapping;
 use iced::widget::{
     Column, button, center, column, container, image, responsive, row, scrollable, shader, slider,
@@ -134,7 +135,15 @@ pub struct App {
     fitted: Cell<f32>,
     /// Whether the log below the stage is unfolded, or just its header.
     log_open: bool,
+    /// Where the stage is scrolled to, as the last scroll left it; `None`
+    /// while it is centred on the show, which a fresh open and a fit ask
+    /// for. A zoom step scales it, so the point under the middle of the
+    /// view stays there.
+    scrolled: Option<AbsoluteOffset>,
 }
+
+/// The stage's scroll pane, for the tasks that position it.
+const STAGE: &str = "stage";
 
 /// An area of the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +259,8 @@ pub enum Message {
     Zoom(Zoom),
     /// Zoom in (above 1) or out (below 1) from the scale shown now.
     ZoomBy(f32),
+    /// The stage's scroll pane moved, by hand or by a task.
+    Scrolled(AbsoluteOffset),
     /// The library area switched to a tab.
     Tab(Tab),
     /// An asset picked in the library, or the pick cleared.
@@ -330,6 +341,7 @@ impl App {
                 }),
             }),
             zoom: Zoom::Fit,
+            scrolled: None,
             scale_factor: 1.0,
             fitted: Cell::new(1.0),
             log_open: true,
@@ -581,14 +593,23 @@ impl App {
                 Task::none()
             }
             Message::Zoom(zoom) => {
+                let before = self.scale();
                 self.zoom = match zoom {
                     Zoom::Fit => Zoom::Fit,
                     Zoom::Scale(scale) => self.zoom_to(scale),
                 };
-                Task::none()
+                match zoom {
+                    Zoom::Fit => self.centre_stage(),
+                    Zoom::Scale(_) => self.keep_middle(before),
+                }
             }
             Message::ZoomBy(factor) => {
-                self.zoom = self.zoom_to(self.scale() * factor);
+                let before = self.scale();
+                self.zoom = self.zoom_to(before * factor);
+                self.keep_middle(before)
+            }
+            Message::Scrolled(offset) => {
+                self.scrolled = Some(offset);
                 Task::none()
             }
             Message::Rescaled(factor) => {
@@ -751,6 +772,30 @@ impl App {
         Zoom::Scale(scale.clamp(Zoom::MIN, self.max_zoom()))
     }
 
+    /// Put the show in the middle of the stage: what a fresh open and a
+    /// fit do.
+    fn centre_stage(&mut self) -> Task<Message> {
+        self.scrolled = None;
+        snap_to(STAGE, RelativeOffset { x: 0.5, y: 0.5 }, Animation::Instant)
+    }
+
+    /// After a zoom from the scale `before`, keep the canvas point that was
+    /// under the middle of the view there. The room round the show is half
+    /// the view on every side, so that point is the scroll offset over the
+    /// scale, and the new offset is the old one scaled.
+    fn keep_middle(&mut self, before: f32) -> Task<Message> {
+        let Some(offset) = self.scrolled else {
+            return self.centre_stage();
+        };
+        let ratio = self.scale() / before.max(f32::EPSILON);
+        let to = AbsoluteOffset {
+            x: offset.x * ratio,
+            y: offset.y * ratio,
+        };
+        self.scrolled = Some(to);
+        scroll_to(STAGE, to, Animation::Instant)
+    }
+
     /// The largest zoom whose frame vello still draws.
     fn max_zoom(&self) -> f32 {
         let [w, h] = self.summary.size.map(|n| n.max(1) as f32);
@@ -813,7 +858,8 @@ impl App {
                 let rescaled = iced::window::latest()
                     .and_then(iced::window::scale_factor)
                     .map(Message::Rescaled);
-                Task::batch([task, fonts, rescaled])
+                let centred = self.centre_stage();
+                Task::batch([task, fonts, rescaled, centred])
             }
             Err(error) => {
                 self.status = format!("could not open: {error}");
@@ -1093,16 +1139,13 @@ impl App {
 }
 
 impl App {
-    /// The stage area: a zoom bar over the show drawn at its scale,
-    /// centred while it fits and scrolled once it does not.
+    /// The stage area: a zoom bar over the show drawn at its scale, in a
+    /// scroll pane with room round it of half the view on every side, so
+    /// the show can be scrolled until its edge sits in the middle of the
+    /// view, the way drawing tools have it.
     fn stage<'a>(&'a self, session: &'a Session, size: Size) -> Element<'a, Message> {
         const BAR: f32 = 36.0;
         const MARGIN: f32 = 8.0;
-        /// What a scrollbar covers: iced floats its bars over the content
-        /// (the bars that take their own space only work for one
-        /// direction), so the show gets that much room past its far edge
-        /// on an axis it overflows, and the bar covers room, not show.
-        const SCROLLBAR: f32 = 10.0;
         let [show_w, show_h] = self.summary.size.map(|n| n.max(1) as f32);
         let room = Size::new(
             (size.width - 2.0 * MARGIN).max(1.0),
@@ -1115,18 +1158,15 @@ impl App {
             Zoom::Scale(scale) => scale,
         };
         let (w, h) = ((show_w * scale).round(), (show_h * scale).round());
-        // A bar on one axis takes room from the other, which may then
-        // overflow too.
-        let (mut sideways, mut downwards) = (false, false);
-        for _ in 0..2 {
-            sideways = w + if downwards { SCROLLBAR } else { 0.0 } > room.width;
-            downwards = h + if sideways { SCROLLBAR } else { 0.0 } > room.height;
-        }
-        let past = iced::Padding {
-            top: 0.0,
-            right: if downwards { SCROLLBAR } else { 0.0 },
-            bottom: if sideways { SCROLLBAR } else { 0.0 },
-            left: 0.0,
+        // The room round the show: half the view on every side, so the
+        // pane's bars stand for show plus room and its own background
+        // shows round the show; the scrollbars float over room, never
+        // over the show's far edge.
+        let around = iced::Padding {
+            top: (room.height / 2.0).round(),
+            bottom: (room.height / 2.0).round(),
+            left: (room.width / 2.0).round(),
+            right: (room.width / 2.0).round(),
         };
 
         let zoom_button = |label: &'a str, zoom: Zoom| {
@@ -1155,11 +1195,14 @@ impl App {
         })
         .width(w)
         .height(h);
-        // The scroll pane holds the show and nothing else, so its bars
-        // stand for the show: it shrinks to the show while that fits,
-        // centred in the room with the margin outside it, and past that
-        // fills the room and scrolls.
-        let scrolled = scrollable(container(stage).padding(past))
+        // The pane fills the room, with the margin outside it, and is
+        // positioned by the tasks that centre it and keep the middle on
+        // a zoom.
+        let scrolled = scrollable(container(stage).padding(around))
+            .id(STAGE)
+            .width(Fill)
+            .height(Fill)
+            .on_scroll(|scroll| Message::Scrolled(scroll.viewport.absolute_offset()))
             .direction(Direction::Both {
                 vertical: Scrollbar::default(),
                 horizontal: Scrollbar::default(),
@@ -1173,7 +1216,7 @@ impl App {
             });
         column![
             container(bar).padding([4, 8]).height(BAR),
-            container(scrolled).padding(MARGIN).center(Fill)
+            container(scrolled).padding(MARGIN).width(Fill).height(Fill)
         ]
         .width(Fill)
         .height(Fill)

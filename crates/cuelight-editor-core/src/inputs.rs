@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use cuelight_core::{Layer, LayerKind, Show, Value};
+use cuelight_core::{Layer, Show, Value};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Inputs {
@@ -85,9 +85,7 @@ fn presses(layers: &[Layer], out: &mut Vec<(String, String)>) {
         if let Some(press) = &layer.press {
             out.push((layer.name.clone(), press.trigger.clone()));
         }
-        if let LayerKind::Group { children, .. } = &layer.kind {
-            presses(children, out);
-        }
+        presses(layer.children(), out);
     }
 }
 

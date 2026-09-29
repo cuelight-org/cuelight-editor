@@ -188,9 +188,6 @@ fn walk(
             }
         };
         match &layer.kind {
-            LayerKind::Group { children, .. } => {
-                walk(children, &place, styles, out);
-            }
             LayerKind::Image { image, .. } => {
                 note(Ref::Artwork(image.clone()), "image layer".into())
             }
@@ -220,5 +217,8 @@ fn walk(
             }
             _ => {}
         }
+        // A group's children, and an artwork layer's parts (which name
+        // nothing of their own).
+        walk(layer.children(), &place, styles, out);
     }
 }

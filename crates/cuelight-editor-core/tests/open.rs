@@ -38,10 +38,12 @@ fn a_folder_lists_its_assets_and_where_they_are_used() {
     assert_eq!((dot.name.as_str(), dot.kind), ("dot", Kind::Image));
     assert_eq!(dot.file.as_deref(), Some("assets/dot.png"));
     assert_eq!(dot.size, Some([8.0, 8.0]));
+    assert_eq!(dot.bytes, Some(opened.files["assets/dot.png"].len()));
     assert_eq!(
         dot.uses,
         [Use {
             place: "group/dot".to_owned(),
+            path: cuelight_core::LayerPath::new(cuelight_core::Root::Show, [1, 0]),
             how: "image layer".to_owned()
         }]
     );

@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use cuelight_core::{Influence, LayerKind, LayerPath, Property, TimelineOwner, Value};
-use cuelight_editor_core::assets::{Asset, Kind};
+use cuelight_editor_core::assets::{self, Asset, Kind};
 use cuelight_editor_core::inputs::{self, Inputs, Place};
 use cuelight_editor_core::session::Instant;
 use cuelight_editor_core::specimen::{self, Drawn, Sizing};
@@ -694,6 +694,9 @@ impl App {
                 Task::none()
             }
             Message::Choose(path) => {
+                // Also from the inspector's list of an asset's uses: the
+                // layer is then shown where the tree has it.
+                self.tab = Tab::Layers;
                 self.selection = vec![path];
                 self.selected = None;
                 self.expanded = None;
@@ -1350,7 +1353,7 @@ impl App {
         let tabs = row![tab("Layers", Tab::Layers), tab("Assets", Tab::Assets)].spacing(6);
         let body = match self.tab {
             Tab::Layers => self.tree_panel(session),
-            Tab::Assets => self.assets_panel(session),
+            Tab::Assets => self.assets_panel(),
         };
         column![
             container(tabs).padding([4, 8]),
@@ -1410,20 +1413,12 @@ impl App {
     /// The inspector: the picked layer's properties with their live
     /// values and where each comes from, its bindings and timelines, and
     /// its JSON; the show's own facts while nothing is picked. With the
-    /// assets showing, the picked font's specimen or the picked
-    /// artwork's preview.
+    /// assets showing, the picked asset.
     fn inspector_panel<'a>(&'a self, session: &'a Session, size: Size) -> Column<'a, Message> {
         if self.tab == Tab::Assets
             && let Some(i) = self.selected
-            && let Some(faces) = &self.faces[i]
         {
-            return self.specimen_panel(session, &self.library[i], faces);
-        }
-        if self.tab == Tab::Assets
-            && let Some(i) = self.selected
-            && matches!(self.library[i].kind, Kind::Image | Kind::Vector)
-        {
-            return self.preview(session, i, size);
+            return self.asset_panel(session, i, size);
         }
         let Some(path) = self.selection.last() else {
             return summary(&self.summary);
@@ -1676,15 +1671,15 @@ fn describe_source(influence: &Influence) -> String {
 }
 
 impl App {
-    /// The assets by kind, each with its thumbnail and facts; the picked
-    /// one's file and every place the show uses it right under it.
-    fn assets_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
+    /// The assets by kind, each with its thumbnail, its format and how
+    /// often the show uses it; what else there is to know of one is in
+    /// the inspector once it is picked.
+    fn assets_panel<'a>(&'a self) -> Column<'a, Message> {
         const THUMB: f32 = 40.0;
         let mut panel = Column::new().spacing(4).padding(12);
         if self.library.is_empty() {
             return panel.push(text("This show ships no assets.").size(14));
         }
-        let engine = session.engine.lock().expect("the engine is not poisoned");
         let mut heading: Option<&str> = None;
         for (i, asset) in self.library.iter().enumerate() {
             if heading != Some(asset.kind.heading()) {
@@ -1710,31 +1705,7 @@ impl App {
                     .center_y(THUMB)
                     .into(),
             };
-            let mut facts = match asset.kind {
-                Kind::Image => asset
-                    .size
-                    .map(|[w, h]| format!("{w} x {h} px"))
-                    .unwrap_or_default(),
-                Kind::Vector => asset
-                    .size
-                    .map(|[w, h]| format!("{w} x {h}, vector"))
-                    .unwrap_or_else(|| "vector".to_owned()),
-                Kind::Font => match &self.faces[i] {
-                    Some(faces) => sizing_name(&faces.sizings[0]),
-                    None => "font".to_owned(),
-                },
-                Kind::Sound => engine
-                    .sound_duration(&asset.name)
-                    .map(|d| format!("{d:.2} s"))
-                    .unwrap_or_else(|| "sound".to_owned()),
-                Kind::Video => engine
-                    .video(&asset.name)
-                    .map(|v| format!("{:.2} s, {} x {}", v.duration, v.width, v.height))
-                    .unwrap_or_else(|| "video".to_owned()),
-            };
-            if asset.uses.is_empty() {
-                facts.push_str(", unused");
-            }
+            let mut facts = asset.summary();
             let playing = self.preview.as_ref().is_some_and(|p| p.index == i);
             if playing {
                 facts.push_str(", playing");
@@ -1770,9 +1741,6 @@ impl App {
             } else {
                 panel = panel.push(b);
             }
-            if self.selected == Some(i) {
-                panel = panel.push(container(picked(asset)).padding([4, 12]));
-            }
         }
         panel
     }
@@ -1780,8 +1748,7 @@ impl App {
 
 impl App {
     /// The picked artwork, large: fitted to the pane or at its own size,
-    /// on the show's background; for vector artwork, the element ids it
-    /// is made of and which of them the show moves as parts.
+    /// on the show's background.
     fn preview<'a>(&'a self, session: &'a Session, i: usize, size: Size) -> Column<'a, Message> {
         const PADDING: f32 = 12.0;
         /// What a scrollbar covers, as on the stage: room past the
@@ -1797,9 +1764,6 @@ impl App {
             _ => "image".to_owned(),
         };
         panel = panel.push(text(facts).size(12));
-        if let Some(file) = &asset.file {
-            panel = panel.push(text(file).size(12));
-        }
 
         if let (Some(thumb), Some([w, h])) = (&self.thumbs[i], asset.size) {
             let (w, h) = (w.max(1.0) as f32, h.max(1.0) as f32);
@@ -1875,6 +1839,80 @@ impl App {
             });
         }
 
+        panel
+    }
+}
+
+impl App {
+    /// A picked asset: its preview or specimen, then its file, then every
+    /// layer that uses it, each a link to that layer; for vector artwork,
+    /// last, the element ids it is made of and which the show moves as
+    /// parts.
+    fn asset_panel<'a>(
+        &'a self,
+        session: &'a Session,
+        i: usize,
+        size: Size,
+    ) -> Column<'a, Message> {
+        let asset = &self.library[i];
+        let mut panel = if let Some(faces) = &self.faces[i] {
+            self.specimen_panel(session, asset, faces)
+        } else if matches!(asset.kind, Kind::Image | Kind::Vector) {
+            self.preview(session, i, size)
+        } else {
+            let engine = session.engine.lock().expect("the engine is not poisoned");
+            let facts = match asset.kind {
+                Kind::Sound => engine
+                    .sound_duration(&asset.name)
+                    .map(|d| format!("sound, {d:.2} s")),
+                Kind::Video => engine
+                    .video(&asset.name)
+                    .map(|v| format!("video, {:.2} s, {} x {}", v.duration, v.width, v.height)),
+                _ => None,
+            };
+            column![
+                text(&asset.name).size(16),
+                text(facts.unwrap_or_else(|| asset.kind.name().to_owned())).size(12)
+            ]
+            .spacing(4)
+            .padding(12)
+        };
+        let heading = |label: &'a str| container(text(label).size(12)).padding([6, 0]);
+
+        panel = panel.push(heading("FILE"));
+        match &asset.file {
+            Some(file) => {
+                panel = panel.push(text(file).size(13));
+                let mut about = asset.format().unwrap_or_default();
+                if let Some(bytes) = asset.bytes {
+                    about = format!("{about}, {}", assets::file_size(bytes));
+                }
+                panel = panel.push(text(about).size(12));
+            }
+            None => panel = panel.push(text("no file: the show came without its folder").size(12)),
+        }
+
+        panel = panel.push(heading("USED BY"));
+        if asset.uses.is_empty() {
+            panel = panel.push(text("nothing in this show").size(13));
+            if let Some(file) = &asset.file {
+                let prefix = format!("{file}: ");
+                for line in session.log.audit_of(file) {
+                    let said = line.text.strip_prefix(&prefix).unwrap_or(&line.text);
+                    panel = panel.push(text(format!("{}: {said}", line.kind.label())).size(12));
+                }
+            }
+        }
+        for used in &asset.uses {
+            panel = panel.push(
+                button(column![text(&used.place).size(13), text(&used.how).size(12)].spacing(2))
+                    .on_press(Message::Choose(used.path.clone()))
+                    .width(Fill)
+                    .padding([2, 6])
+                    .style(button::text),
+            );
+        }
+
         if let Some(structure) = &asset.structure {
             panel = panel.push(container(text("ELEMENTS").size(12)).padding([6, 0]));
             panel = panel.push(
@@ -1925,22 +1963,6 @@ impl App {
         }
         panel
     }
-}
-
-/// The picked asset's file and every place the show uses it.
-fn picked(asset: &Asset) -> Column<'_, Message> {
-    let mut facts = Column::new().spacing(3);
-    if let Some(file) = &asset.file {
-        facts = facts.push(text(file).size(12));
-    }
-    facts = facts.push(text("USED BY").size(12));
-    if asset.uses.is_empty() {
-        facts = facts.push(text("nothing in this show").size(13));
-    }
-    for used in &asset.uses {
-        facts = facts.push(row![text(&used.place).size(13), text(&used.how).size(12)].spacing(8));
-    }
-    facts
 }
 
 /// The tallest a font's sample line is drawn in its row.
@@ -2486,20 +2508,30 @@ mod tests {
             let mut ui = simulator(app.view());
             assert!(ui.find("ARTWORK").is_ok());
             assert!(ui.find("dot").is_ok());
-            assert!(ui.find("8 x 8 px").is_ok(), "an image's size");
+            assert!(ui.find("png, used once").is_ok(), "its format and uses");
             assert!(ui.find("USED BY").is_err(), "nothing picked yet");
         }
         assert!(matches!(app.thumbs.as_slice(), [Some(Thumb::Image(_))]));
         let _ = app.update(Message::Select(Some(0)));
-        let mut ui = simulator(app.view());
-        assert!(ui.find("assets/dot.png").is_ok(), "the file");
-        assert!(ui.find("group/dot").is_ok(), "the layer that uses it");
-        assert!(ui.find("image layer").is_ok());
-        let _ = ui.click("Layers");
-        for message in ui.into_messages() {
-            let _ = app.update(message);
+        {
+            let mut ui = simulator(app.view());
+            assert!(ui.find("USED BY").is_ok(), "in the inspector");
+            assert!(ui.find("assets/dot.png").is_ok(), "the file");
+            assert!(ui.find("image layer").is_ok());
+            // A use is a link to the layer, shown where the tree has it.
+            let _ = ui.click("group/dot");
+            for message in ui.into_messages() {
+                let _ = app.update(message);
+            }
         }
         assert_eq!(app.tab, Tab::Layers);
+        assert_eq!(app.selected, None);
+        assert_eq!(
+            app.selection,
+            [LayerPath::new(cuelight_core::Root::Show, [1, 0])]
+        );
+        let mut ui = simulator(app.view());
+        assert!(ui.find("image, group/dot").is_ok(), "the layer inspected");
     }
 
     #[test]
@@ -2552,7 +2584,10 @@ mod tests {
             })]
         ));
         let mut ui = simulator(app.view());
-        assert!(ui.find("bitmap, its own size").is_ok(), "the row's size");
+        assert!(
+            ui.find("fnt, used 2 times").is_ok(),
+            "the row's format and uses"
+        );
         assert!(ui.find("BITMAP, ITS OWN SIZE").is_ok(), "the specimen's");
         assert!(ui.find("loud").is_ok(), "a style using it");
         assert!(ui.find("#FF0000, border #000000 1 px").is_ok());

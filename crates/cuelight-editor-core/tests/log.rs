@@ -140,3 +140,26 @@ fn a_session_logs_what_the_hand_did_and_what_the_engine_traced() {
     session.audit(SHOW);
     assert_eq!(session.log.len(), audits);
 }
+
+#[test]
+fn the_audit_of_one_place_is_found_by_its_path() {
+    let mut log = Log::default();
+    log.extend(log::audit(
+        SHOW,
+        &["show.json".to_owned(), "assets/sounds/spare.wav".to_owned()],
+        None,
+    ));
+    log.push(log::fired(
+        1.0,
+        "assets/sounds/spare.wav: not an audit line",
+    ));
+    let about: Vec<&str> = log
+        .audit_of("assets/sounds/spare.wav")
+        .map(|l| l.text.as_str())
+        .collect();
+    assert_eq!(
+        about,
+        ["assets/sounds/spare.wav: nothing in the show names this file"]
+    );
+    assert_eq!(log.audit_of("assets/sounds/spare").count(), 0);
+}

@@ -2,7 +2,7 @@
 //! playing, and a scrub replaying them.
 
 use cuelight_core::{Property, Value};
-use cuelight_editor_core::session::{Instant, Session};
+use cuelight_editor_core::session::{Instant, Session, What};
 
 /// Two scenes: the first entered at load, the second by `next`, where a
 /// bar slides from 5 to 15 over a second from the moment it is entered.
@@ -72,4 +72,40 @@ fn a_key_or_a_set_while_paused_leaves_the_show_paused() {
     assert_eq!(session.key("x"), None, "the show maps no keys");
     assert!(session.paused);
     assert_eq!(session.time, 0.0);
+}
+
+#[test]
+fn a_scene_entered_by_its_heading_counts_its_own_clock() {
+    let mut session = session();
+    let now = Instant::now();
+    session.toggle_pause(now);
+    session.tick(now);
+    session.tick(now + std::time::Duration::from_millis(2500));
+    assert!(!session.paused);
+    assert_eq!(session.entered, 0.0, "the first scene was entered at load");
+
+    // The second scene is entered by its trigger, paused where it was.
+    session.enter_scene(1, now);
+    assert!(session.paused);
+    assert_eq!(session.active_scene().as_deref(), Some("second"));
+    assert_eq!(session.entered, 2.5);
+    assert_eq!(session.scene_length(), 1.0, "its slide is a second long");
+    assert!(matches!(
+        session.happened.back().map(|h| &h.what),
+        Some(What::Fired(t)) if t == "next"
+    ));
+
+    // Within the scene: a seek to its entry plus a time.
+    session.seek(session.entered + 0.5, now);
+    assert_eq!(session.time, 3.0);
+    assert_eq!(session.entered, 2.5, "a scrub replays the entry");
+    assert_eq!(x_of(&session, "bar"), Some(10.0));
+
+    // The first scene has no trigger: entering it restarts the show.
+    session.enter_scene(0, now);
+    assert!(session.paused);
+    assert_eq!(session.time, 0.0);
+    assert_eq!(session.entered, 0.0);
+    assert_eq!(session.active_scene().as_deref(), Some("intro"));
+    assert_eq!(session.scene_length(), 0.0, "it has no timelines");
 }

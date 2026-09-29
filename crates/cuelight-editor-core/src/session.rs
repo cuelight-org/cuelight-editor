@@ -138,6 +138,7 @@ impl Session {
             self.live.record_set(self.time, name, value.clone());
         }
         self.note(What::Set(name.to_owned(), value));
+        self.settle();
     }
 
     /// A key, by the name a browser gives it; fires what the show says
@@ -211,6 +212,22 @@ impl Session {
             self.live.record(self.time, trigger);
         }
         self.note(What::Fired(trigger.to_owned()));
+        self.settle();
+    }
+
+    /// An input given while paused is applied at the paused instant and
+    /// the show stays there: the engine runs a step that does not move
+    /// its clock, as a seek landing on that instant would, so the scene
+    /// entered and the timelines started are on the stage at once.
+    fn settle(&mut self) {
+        if self.paused {
+            self.engine
+                .lock()
+                .expect("the engine is not poisoned")
+                .advance_to(self.time);
+            self.collect_events();
+            self.collect_trace();
+        }
         self.revision += 1;
     }
 

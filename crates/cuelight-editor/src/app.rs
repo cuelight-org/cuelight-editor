@@ -2,21 +2,23 @@
 //! opened, and a status line.
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cuelight_core::{Influence, LayerKind, LayerPath, Property, TimelineOwner, Value};
 use cuelight_editor_core::assets::{Asset, Kind};
 use cuelight_editor_core::inputs::{self, Inputs, Place};
 use cuelight_editor_core::session::Instant;
+use cuelight_editor_core::specimen::{self, Drawn, Sizing};
 use cuelight_editor_core::tree::{self, Row};
 use iced::keyboard;
 use iced::widget::pane_grid::{self, Axis, Configuration};
 use iced::widget::scrollable::{Direction, Scrollbar};
+use iced::widget::text::Wrapping;
 use iced::widget::{
     Column, button, center, column, container, image, responsive, row, scrollable, shader, slider,
     space, svg, text, text_input, toggler,
 };
-use iced::{ContentFit, Element, Fill, Size, Subscription, Task, Theme};
+use iced::{ContentFit, Element, Fill, Font, Size, Subscription, Task, Theme};
 
 use crate::dialog::{self, Picked};
 use crate::stage::{Pick, Stage};
@@ -87,6 +89,11 @@ pub struct App {
     /// The show's assets, and a thumbnail for each piece of artwork.
     library: Vec<Asset>,
     thumbs: Vec<Option<Thumb>>,
+    /// How each font in the library looks, beside it.
+    faces: Vec<Option<Faces>>,
+    /// The outline fonts iced has been given, by name: a sample waits
+    /// for its font, so it is not laid out in a fallback first.
+    loaded: BTreeSet<String>,
     /// A sound playing from the library, outside the show's clock.
     preview: Option<Preview>,
     /// Which asset the library shows the facts of, and the inspector
@@ -150,6 +157,35 @@ pub enum Tab {
 enum Thumb {
     Image(image::Handle),
     Svg(svg::Handle),
+}
+
+/// A font as the library shows it: the sizes the show uses it at, the
+/// sample line at the first, and the specimen at each.
+struct Faces {
+    sizings: Vec<Sizing>,
+    sample: Face,
+    /// Per sizing, each specimen row's code and characters with how
+    /// they came out.
+    specimens: Vec<Vec<(String, String, Face)>>,
+}
+
+/// A line of text in a show's font, ready to draw: the engine's pixels
+/// for a bitmap or pixel font, the family for iced to draw an outline
+/// font in, or nothing when the font has none of its characters.
+#[derive(Clone)]
+enum Face {
+    Image {
+        handle: image::Handle,
+        width: u32,
+        height: u32,
+    },
+    Outline {
+        font: Font,
+        /// The font's name in the show, to know when iced has it.
+        name: String,
+        size: f32,
+    },
+    Nothing,
 }
 
 /// A sound played once from the library: which asset it is, and since
@@ -224,6 +260,8 @@ pub enum Message {
     Reveal(String),
     /// The preview at the artwork's own size, or fitted.
     ActualSize(bool),
+    /// An outline font of the show was given to iced to draw with.
+    FontLoaded(String, bool),
     /// The play button of a sound in the library: play it once, or stop
     /// it while it plays.
     Preview(usize),
@@ -261,6 +299,8 @@ impl App {
             summary: Summary::default(),
             library: Vec::new(),
             thumbs: Vec::new(),
+            faces: Vec::new(),
+            loaded: BTreeSet::new(),
             preview: None,
             selected: None,
             actual_size: false,
@@ -592,6 +632,12 @@ impl App {
                 self.actual_size = on;
                 Task::none()
             }
+            Message::FontLoaded(name, loaded) => {
+                if loaded {
+                    self.loaded.insert(name);
+                }
+                Task::none()
+            }
             Message::Preview(index) => {
                 match &self.preview {
                     Some(preview) if preview.index == index => self.preview = None,
@@ -741,6 +787,9 @@ impl App {
                 self.source = source;
                 self.summary = summary;
                 self.thumbs = thumbs(&engine, &library);
+                self.faces = faces(&engine, &files, &library);
+                self.loaded.clear();
+                let fonts = load_fonts(&engine, &library);
                 self.library = library;
                 self.preview = None;
                 self.selected = None;
@@ -764,7 +813,7 @@ impl App {
                 let rescaled = iced::window::latest()
                     .and_then(iced::window::scale_factor)
                     .map(Message::Rescaled);
-                Task::batch([task, rescaled])
+                Task::batch([task, fonts, rescaled])
             }
             Err(error) => {
                 self.status = format!("could not open: {error}");
@@ -1317,8 +1366,16 @@ impl App {
 
     /// The inspector: the picked layer's properties with their live
     /// values and where each comes from, its bindings and timelines, and
-    /// its JSON; the show's own facts while nothing is picked.
+    /// its JSON; the show's own facts while nothing is picked. With the
+    /// assets showing, the picked font's specimen or the picked
+    /// artwork's preview.
     fn inspector_panel<'a>(&'a self, session: &'a Session, size: Size) -> Column<'a, Message> {
+        if self.tab == Tab::Assets
+            && let Some(i) = self.selected
+            && let Some(faces) = &self.faces[i]
+        {
+            return self.specimen_panel(session, &self.library[i], faces);
+        }
         if self.tab == Tab::Assets
             && let Some(i) = self.selected
             && matches!(self.library[i].kind, Kind::Image | Kind::Vector)
@@ -1619,7 +1676,10 @@ impl App {
                     .size
                     .map(|[w, h]| format!("{w} x {h}, vector"))
                     .unwrap_or_else(|| "vector".to_owned()),
-                Kind::Font => "font".to_owned(),
+                Kind::Font => match &self.faces[i] {
+                    Some(faces) => sizing_name(&faces.sizings[0]),
+                    None => "font".to_owned(),
+                },
                 Kind::Sound => engine
                     .sound_duration(&asset.name)
                     .map(|d| format!("{d:.2} s"))
@@ -1636,12 +1696,17 @@ impl App {
             if playing {
                 facts.push_str(", playing");
             }
-            let line = row![
-                thumb,
-                column![text(&asset.name).size(14), text(facts).size(12)].spacing(2)
-            ]
-            .spacing(8)
-            .align_y(iced::Center);
+            let mut about = column![text(&asset.name).size(14), text(facts).size(12)].spacing(2);
+            if let Some(faces) = &self.faces[i] {
+                // The sample at the size the show uses the font at, as
+                // tall as a row allows; what does not fit is cut off.
+                about = about.push(
+                    container(self.face(&faces.sample, specimen::SAMPLE, 1.0, Some(SAMPLE_HEIGHT)))
+                        .width(Fill)
+                        .clip(true),
+                );
+            }
+            let line = row![thumb, about].spacing(8).align_y(iced::Center);
             let mut b = button(line)
                 .on_press(Message::Select(Some(i)))
                 .width(Fill)
@@ -1833,6 +1898,267 @@ fn picked(asset: &Asset) -> Column<'_, Message> {
         facts = facts.push(row![text(&used.place).size(13), text(&used.how).size(12)].spacing(8));
     }
     facts
+}
+
+/// The tallest a font's sample line is drawn in its row.
+const SAMPLE_HEIGHT: f32 = 48.0;
+
+impl App {
+    /// A picked font: every printable character at each size the show
+    /// uses the font at, with the styles that use it so, at 100% and
+    /// zoomed in.
+    fn specimen_panel<'a>(
+        &'a self,
+        session: &'a Session,
+        asset: &'a Asset,
+        faces: &'a Faces,
+    ) -> Column<'a, Message> {
+        let engine = session.engine.lock().expect("the engine is not poisoned");
+        let mut panel = Column::new().spacing(4).padding(12);
+        panel = panel.push(text(&asset.name).size(16));
+        let kind = match faces.sizings[0].size {
+            None => "bitmap font",
+            Some(_) => "outline font",
+        };
+        panel = panel.push(text(kind).size(12));
+        for (sizing, lines) in faces.sizings.iter().zip(&faces.specimens) {
+            panel = panel.push(space::vertical().height(8));
+            panel = panel.push(text(sizing_name(sizing).to_uppercase()).size(12));
+            if lines
+                .iter()
+                .any(|(_, _, face)| matches!(face, Face::Outline { .. }))
+            {
+                // The stage fills outlines through the renderer; here
+                // they are iced's, in the font the file declares.
+                panel = panel.push(text("outlines, drawn by the editor in this font").size(12));
+            }
+            if sizing.styles.is_empty() {
+                panel = panel.push(text("no font style uses it").size(12));
+            }
+            for name in &sizing.styles {
+                let style = engine.show().and_then(|show| show.fonts.get(name));
+                panel = panel.push(
+                    row![
+                        text(name).size(13),
+                        text(style.map(style_name).unwrap_or_default()).size(12)
+                    ]
+                    .spacing(8),
+                );
+            }
+            // Zoomed so a line is some 24 pixels tall, for a font smaller
+            // than that: pixels are looked at close.
+            let tall = lines
+                .iter()
+                .find_map(|(_, _, face)| match face {
+                    Face::Image { height, .. } => Some(*height as f32),
+                    Face::Outline { size, .. } => Some(*size),
+                    Face::Nothing => None,
+                })
+                .unwrap_or(16.0)
+                .max(1.0);
+            let zoom = (24.0 / tall).ceil().min(8.0);
+            let zooms: &[f32] = if zoom >= 2.0 { &[1.0, zoom] } else { &[1.0] };
+            for &zoom in zooms {
+                let mut block = Column::new().spacing(2);
+                for (code, line, face) in lines {
+                    block = block.push(
+                        row![
+                            text(code).size(12).font(Font::MONOSPACE).width(24),
+                            self.face(face, line, zoom, None)
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Center),
+                    );
+                }
+                panel = panel.push(text(format!("{:.0}%", zoom * 100.0)).size(12));
+                panel = panel.push(
+                    scrollable(block)
+                        .direction(Direction::Horizontal(Scrollbar::default().spacing(4)))
+                        .width(Fill),
+                );
+            }
+        }
+        panel
+    }
+
+    /// `line` in a show's font, `zoom` times its size or at most `max`
+    /// tall: the engine's pixels as they are, never smoothed while they
+    /// are enlarged; an outline font's text once iced has the font.
+    fn face<'a>(
+        &self,
+        face: &Face,
+        line: &'a str,
+        zoom: f32,
+        max: Option<f32>,
+    ) -> Element<'a, Message> {
+        match face {
+            Face::Image {
+                handle,
+                width,
+                height,
+            } => {
+                let (width, height) = (*width as f32, *height as f32);
+                let scale = max.map_or(zoom, |max| zoom.min(max / height));
+                // Drawn from its left edge at its own size times the
+                // scale; a narrower place cuts it off rather than
+                // shrinking it.
+                image(handle.clone())
+                    .width(width * scale)
+                    .height(height * scale)
+                    .content_fit(ContentFit::None)
+                    .scale(scale)
+                    .filter_method(if scale >= 1.0 {
+                        image::FilterMethod::Nearest
+                    } else {
+                        image::FilterMethod::Linear
+                    })
+                    .into()
+            }
+            Face::Outline { font, name, size } => {
+                if !self.loaded.contains(name) {
+                    return text("the font is not loaded").size(12).into();
+                }
+                let size = max.map_or(size * zoom, |max| (size * zoom).min(max));
+                text(line)
+                    .font(*font)
+                    .size(size)
+                    .wrapping(Wrapping::None)
+                    .into()
+            }
+            Face::Nothing => text("none of these characters").size(12).into(),
+        }
+    }
+}
+
+/// How a font is sized: a bitmap font's own size, or pixels per em and
+/// whether they are drawn as exact pixels.
+fn sizing_name(sizing: &Sizing) -> String {
+    match sizing.size {
+        None => "bitmap, its own size".to_owned(),
+        Some(size) if sizing.pixels => format!("{size} px, as pixels"),
+        Some(size) => format!("{size} px"),
+    }
+}
+
+/// What a font style adds to its font: colour, border and shadow.
+fn style_name(style: &cuelight_core::FontStyle) -> String {
+    let mut name = style.color.clone();
+    if let Some(border) = &style.border {
+        name.push_str(&format!(", border {} {} px", border.color, border.width));
+    }
+    if let Some(shadow) = &style.shadow {
+        name.push_str(&format!(
+            ", shadow {} at {}, {}",
+            shadow.color, shadow.offset[0], shadow.offset[1]
+        ));
+    }
+    name
+}
+
+/// How each font in a library looks, drawn by the engine once when the
+/// show opens.
+fn faces(
+    engine: &cuelight::Engine,
+    files: &BTreeMap<String, Vec<u8>>,
+    library: &[Asset],
+) -> Vec<Option<Faces>> {
+    library
+        .iter()
+        .map(|asset| {
+            if asset.kind != Kind::Font {
+                return None;
+            }
+            let show = engine.show()?;
+            let outline = engine.outline_fonts().any(|(name, _)| name == asset.name);
+            let look = specimen::look(files, show, &asset.name, outline);
+            let face = |drawn: Option<Drawn>, sizing: &Sizing| match drawn {
+                Some(Drawn::Raster(raster)) => Face::Image {
+                    handle: image::Handle::from_rgba(
+                        raster.width,
+                        raster.height,
+                        raster.pixels.to_vec(),
+                    ),
+                    width: raster.width,
+                    height: raster.height,
+                },
+                Some(Drawn::Outline(Some(family))) => Face::Outline {
+                    font: font(&family),
+                    name: asset.name.clone(),
+                    size: sizing.size.unwrap_or(16.0) as f32,
+                },
+                _ => Face::Nothing,
+            };
+            let sample = face(look.sample, &look.sizings[0]);
+            let specimens = look
+                .specimens
+                .into_iter()
+                .zip(&look.sizings)
+                .map(|(lines, sizing)| {
+                    specimen::rows()
+                        .into_iter()
+                        .zip(lines)
+                        .map(|((code, _), line)| {
+                            let drawn = face(line.drawn, sizing);
+                            (code, line.text, drawn)
+                        })
+                        .collect()
+                })
+                .collect();
+            Some(Faces {
+                sizings: look.sizings,
+                sample,
+                specimens,
+            })
+        })
+        .collect()
+}
+
+/// The iced font for an outline font's face: its family at the
+/// nearest of iced's weights, italic when it slants.
+fn font(family: &specimen::Family) -> Font {
+    use iced::font::{Style, Weight};
+    const WEIGHTS: [Weight; 9] = [
+        Weight::Thin,
+        Weight::ExtraLight,
+        Weight::Light,
+        Weight::Normal,
+        Weight::Medium,
+        Weight::Semibold,
+        Weight::Bold,
+        Weight::ExtraBold,
+        Weight::Black,
+    ];
+    let step = (usize::from(family.weight.clamp(100, 900)) + 50) / 100 - 1;
+    Font::with_family(family.name.as_str())
+        .weight(WEIGHTS[step])
+        .style(if family.italic {
+            Style::Italic
+        } else {
+            Style::Normal
+        })
+}
+
+/// Give iced the show's outline fonts, so their samples can be drawn in
+/// them.
+fn load_fonts(engine: &cuelight::Engine, library: &[Asset]) -> Task<Message> {
+    let loads: Vec<Task<Message>> = engine
+        .outline_fonts()
+        .filter(|(name, _)| {
+            library
+                .iter()
+                .any(|asset| asset.kind == Kind::Font && asset.name == *name)
+        })
+        .map(|(name, bytes)| {
+            let name = name.to_owned();
+            iced::font::load(bytes.to_vec()).map(move |result| {
+                if let Err(error) = &result {
+                    log::warn!("font {name}: {error:?}");
+                }
+                Message::FontLoaded(name.clone(), result.is_ok())
+            })
+        })
+        .collect();
+    Task::batch(loads)
 }
 
 /// Thumbnails for the artwork in a library: an image's pixels as the
@@ -2164,6 +2490,32 @@ mod tests {
         let _ = app.update(Message::Reveal("nothing".to_owned()));
         assert_eq!(app.selected, None);
         assert!(app.status.contains("no asset"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_font_shows_its_face_in_its_row_and_a_specimen_when_picked() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/typed"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        let _ = app.update(Message::Reveal("tiny".to_owned()));
+        assert!(matches!(
+            app.faces.as_slice(),
+            [Some(Faces {
+                sample: Face::Image { height: 3, .. },
+                ..
+            })]
+        ));
+        let mut ui = simulator(app.view());
+        assert!(ui.find("bitmap, its own size").is_ok(), "the row's size");
+        assert!(ui.find("BITMAP, ITS OWN SIZE").is_ok(), "the specimen's");
+        assert!(ui.find("loud").is_ok(), "a style using it");
+        assert!(ui.find("#FF0000, border #000000 1 px").is_ok());
+        assert!(ui.find("100%").is_ok());
+        assert!(ui.find("800%").is_ok(), "3 pixels tall, zoomed to 24");
+        assert!(ui.find("none of these characters").is_ok(), "no digits");
     }
 
     #[test]

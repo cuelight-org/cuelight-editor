@@ -1,0 +1,7 @@
+info face="tiny" size=3 bold=0 italic=0 charset="" unicode=1 stretchH=100 smooth=0 aa=1 padding=0,0,0,0 spacing=1,1
+common lineHeight=4 base=3 scaleW=16 scaleH=8 pages=1 packed=0
+page id=0 file="tiny.png"
+chars count=3
+char id=32 x=0 y=0 width=0 height=0 xoffset=0 yoffset=0 xadvance=2 page=0 chnl=15
+char id=65 x=1 y=1 width=3 height=3 xoffset=0 yoffset=0 xadvance=4 page=0 chnl=15
+char id=66 x=6 y=1 width=3 height=3 xoffset=0 yoffset=0 xadvance=4 page=0 chnl=15

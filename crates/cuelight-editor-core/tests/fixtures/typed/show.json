@@ -1,0 +1,42 @@
+{
+  "name": "typed",
+  "size": [
+    64,
+    16
+  ],
+  "output": {
+    "scaling": "pixel_perfect"
+  },
+  "fonts": {
+    "plain": {
+      "file": "tiny",
+      "color": "#FFFFFF"
+    },
+    "loud": {
+      "file": "tiny",
+      "color": "#FF0000",
+      "border": {
+        "color": "#000000",
+        "width": 1
+      }
+    }
+  },
+  "layers": [
+    {
+      "name": "a",
+      "type": "text",
+      "font": "plain",
+      "text": "AB",
+      "x": 1,
+      "y": 1
+    },
+    {
+      "name": "b",
+      "type": "text",
+      "font": "loud",
+      "text": "BA",
+      "x": 20,
+      "y": 1
+    }
+  ]
+}

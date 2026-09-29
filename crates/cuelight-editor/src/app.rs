@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use cuelight_core::{Influence, LayerPath, Property, TimelineOwner, Value};
+use cuelight_core::{Influence, LayerKind, LayerPath, Property, TimelineOwner, Value};
 use cuelight_editor_core::assets::{Asset, Kind};
 use cuelight_editor_core::inputs::{self, Inputs, Place};
 use cuelight_editor_core::session::Instant;
@@ -1176,6 +1176,15 @@ impl App {
             ))
             .size(12),
         );
+        if let LayerKind::Part { id, pivot } = &layer.kind {
+            // An element of the artwork above it, moved in the artwork's
+            // own coordinates around its pivot.
+            let around = match pivot {
+                Some([x, y]) => format!("pivot {x}, {y}"),
+                None => "pivot at the centre of its bounds".to_owned(),
+            };
+            panel = panel.push(text(format!("element {id:?} of the artwork, {around}")).size(12));
+        }
         if self.selection.len() > 1 {
             panel = panel.push(text(format!("{} picked", self.selection.len())).size(12));
         }

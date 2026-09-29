@@ -118,3 +118,24 @@ fn a_folder_without_a_show_says_so() {
         .to_string();
     assert!(error.contains("show.json"), "{error}");
 }
+
+#[test]
+fn an_artworks_parts_open_as_layers_under_it() {
+    // No artwork is registered for a loose document, so a part naming
+    // any id is taken at its word: no problem, and nothing dropped.
+    let opened = Opened::from_bytes(
+        "show.json",
+        br##"{ "format": 1, "name": "x", "size": [8, 8], "layers": [
+              { "name": "wolf", "type": "image", "image": "wolf", "parts": [
+                { "id": "jaw", "pivot": [4, 4] },
+                { "id": "tail", "bindings": [{ "property": "rotation", "variable": "wag" }] } ] }
+            ], "variables": { "wag": 0 } }"##,
+    )
+    .unwrap();
+    assert_eq!(opened.summary.layers, 3, "the artwork and its two parts");
+    assert!(
+        opened.summary.problems.is_empty(),
+        "{:?}",
+        opened.summary.problems
+    );
+}

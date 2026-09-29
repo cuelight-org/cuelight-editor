@@ -1,6 +1,7 @@
 //! The show's layers as the tree lists them: the show's own layers, then
-//! each scene's, in document order, with groups' children under them;
-//! and the lookups the window makes by a layer's path.
+//! each scene's, in document order, with groups' children and an artwork
+//! layer's parts under them; and the lookups the window makes by a
+//! layer's path.
 
 use cuelight_core::{
     DigitDisplay, Layer, LayerKind, LayerPath, Property, Root, Show, layer_at, root_layers,
@@ -47,9 +48,7 @@ fn walk(layers: &[Layer], root: Root, indices: &mut Vec<usize>, out: &mut Vec<Ro
             kind: kind_name(&layer.kind),
             depth: indices.len() - 1,
         });
-        if let LayerKind::Group { children, .. } = &layer.kind {
-            walk(children, root, indices, out);
-        }
+        walk(layer.children(), root, indices, out);
         indices.pop();
     }
 }
@@ -68,6 +67,7 @@ pub fn kind_name(kind: &LayerKind) -> &'static str {
         LayerKind::Digits { .. } => "digits",
         LayerKind::Audio { .. } => "audio",
         LayerKind::Video { .. } => "video",
+        LayerKind::Part { .. } => "part",
     }
 }
 
@@ -86,10 +86,7 @@ pub fn describe(show: &Show, path: &LayerPath) -> String {
             break;
         };
         names.push(layer.name.clone());
-        layers = match &layer.kind {
-            LayerKind::Group { children, .. } => children,
-            _ => &[],
-        };
+        layers = layer.children();
     }
     let place = names.join("/");
     match path.root {
@@ -99,6 +96,31 @@ pub fn describe(show: &Show, path: &LayerPath) -> String {
             None => format!("scene {i}: {place}"),
         },
     }
+}
+
+/// Where `path` is in the document, as a JSON pointer: `/layers/1/children/0`
+/// for a group's child, `/layers/1/parts/0` for an artwork layer's part,
+/// `/scenes/0/layers/2` in a scene. `None` when the show has no layer
+/// there.
+pub fn pointer(show: &Show, path: &LayerPath) -> Option<String> {
+    let mut out = match path.root {
+        Root::Show => "/layers".to_owned(),
+        Root::Scene(i) => format!("/scenes/{i}/layers"),
+    };
+    let mut layers = root_layers(show, path.root)?;
+    for (depth, &i) in path.indices.iter().enumerate() {
+        let layer = layers.get(i)?;
+        out.push_str(&format!("/{i}"));
+        if depth + 1 < path.indices.len() {
+            out.push_str(if layer.holds_parts() {
+                "/parts"
+            } else {
+                "/children"
+            });
+        }
+        layers = layer.children();
+    }
+    Some(out)
 }
 
 /// Whether `path` is `ancestor` or lies under it.
@@ -182,5 +204,50 @@ mod tests {
         assert!(within(path, &LayerPath::new(Root::Show, [1])));
         assert!(!within(path, &LayerPath::new(Root::Show, [0])));
         assert_eq!(property_name(Property::ScaleX), "scale_x");
+        assert_eq!(
+            pointer(&show, path).as_deref(),
+            Some("/layers/1/children/0")
+        );
+        assert_eq!(
+            pointer(&show, &LayerPath::new(Root::Scene(0), [0])).as_deref(),
+            Some("/scenes/0/layers/0")
+        );
+        assert_eq!(pointer(&show, &LayerPath::new(Root::Show, [1, 7])), None);
+    }
+
+    /// An artwork layer's parts are layers under it, and live under
+    /// `parts` in the document where a group's children live under
+    /// `children`.
+    #[test]
+    fn an_artworks_parts_are_listed_under_it_and_addressed_through_parts() {
+        let show: Show = serde_json::from_str(
+            r##"{ "format": 1, "name": "t", "size": [8, 8], "layers": [
+              { "name": "wolf", "type": "image", "image": "wolf", "parts": [
+                { "id": "jaw", "pivot": [4, 4] },
+                { "id": "tail" } ] } ] }"##,
+        )
+        .unwrap();
+        let rows = rows(&show);
+        let names: Vec<String> = rows
+            .iter()
+            .map(|r| match r {
+                Row::Root { name, .. } => format!("[{name}]"),
+                Row::Layer {
+                    name, depth, kind, ..
+                } => format!("{}{name} ({kind})", "  ".repeat(*depth)),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            ["[show]", "wolf (image)", "  jaw (part)", "  tail (part)"]
+        );
+        let jaw = LayerPath::new(Root::Show, [0, 0]);
+        assert_eq!(describe(&show, &jaw), "wolf/jaw");
+        assert_eq!(pointer(&show, &jaw).as_deref(), Some("/layers/0/parts/0"));
+        assert_eq!(layer(&show, &jaw).map(|l| l.name.as_str()), Some("jaw"));
+        assert!(matches!(
+            layer(&show, &jaw).map(|l| &l.kind),
+            Some(LayerKind::Part { id, pivot: Some([4.0, 4.0]) }) if id == "jaw"
+        ));
     }
 }

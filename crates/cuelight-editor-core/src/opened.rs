@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use cuelight::Engine;
 pub use cuelight_audio::Sound;
-use cuelight_core::{Layer, LayerKind, Show};
+use cuelight_core::{Layer, Show};
 use cuelight_loader::Options;
 pub use cuelight_loader::SoundFile;
 
@@ -50,7 +50,8 @@ pub struct Summary {
     pub name: String,
     pub format: u32,
     pub size: [u32; 2],
-    /// Layers in the show and in its scenes, groups' children included.
+    /// Layers in the show and in its scenes, groups' children and artwork
+    /// layers' parts included.
     pub layers: usize,
     pub scenes: usize,
     pub variables: usize,
@@ -337,9 +338,7 @@ fn count(layers: &[Layer], summary: &mut Summary) {
         if layer.press.is_some() {
             summary.pressable += 1;
         }
-        if let LayerKind::Group { children, .. } = &layer.kind {
-            count(children, summary);
-        }
+        count(layer.children(), summary);
     }
 }
 

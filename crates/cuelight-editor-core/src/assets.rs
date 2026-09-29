@@ -7,6 +7,8 @@ use std::sync::Arc;
 use cuelight::Engine;
 use cuelight_core::{DigitDisplay, FontStyle, Layer, LayerKind, ReelCells, Show};
 
+use crate::artwork::{self, Structure};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     Image,
@@ -41,6 +43,9 @@ pub struct Asset {
     /// The SVG's bytes, for vector artwork: its thumbnail is drawn from
     /// them, never through the engine.
     pub svg: Option<Arc<[u8]>>,
+    /// What vector artwork is made of: its element ids and the parts the
+    /// show names of them.
+    pub structure: Option<Structure>,
     /// Where the show uses it, in document order. Empty is worth a mark.
     pub uses: Vec<Use>,
 }
@@ -78,6 +83,7 @@ pub fn library(engine: &Engine, names: &Names, files: &BTreeMap<String, Vec<u8>>
                 .image(name)
                 .map(|i| [f64::from(i.width), f64::from(i.height)]),
             svg: None,
+            structure: None,
             uses: take(Ref::Artwork(name.clone())),
         });
     }
@@ -92,6 +98,9 @@ pub fn library(engine: &Engine, names: &Names, files: &BTreeMap<String, Vec<u8>>
                 .map(|bytes| Arc::from(bytes.as_slice())),
             file,
             size: engine.vector(name).map(|v| [v.width, v.height]),
+            structure: engine
+                .vector(name)
+                .map(|v| artwork::structure(v, name, engine.show())),
             uses: take(Ref::Artwork(name.clone())),
         });
     }
@@ -102,6 +111,7 @@ pub fn library(engine: &Engine, names: &Names, files: &BTreeMap<String, Vec<u8>>
             file: file_for(files, "assets/fonts", name),
             size: None,
             svg: None,
+            structure: None,
             uses: take(Ref::Font(name.clone())),
         });
     }
@@ -112,6 +122,7 @@ pub fn library(engine: &Engine, names: &Names, files: &BTreeMap<String, Vec<u8>>
             file: file_for(files, "assets/sounds", name),
             size: None,
             svg: None,
+            structure: None,
             uses: take(Ref::Sound(name.clone())),
         });
     }
@@ -122,6 +133,7 @@ pub fn library(engine: &Engine, names: &Names, files: &BTreeMap<String, Vec<u8>>
             file: file_for(files, "assets/videos", name),
             size: engine.video(name).map(|v| [v.width, v.height]),
             svg: None,
+            structure: None,
             uses: take(Ref::Video(name.clone())),
         });
     }

@@ -139,3 +139,46 @@ fn an_artworks_parts_open_as_layers_under_it() {
         opened.summary.problems
     );
 }
+
+#[test]
+fn an_svgs_ids_are_listed_with_the_parts_the_show_names() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("assets")).unwrap();
+    std::fs::write(
+        dir.path().join("assets/wolf.svg"),
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+              <rect width="20" height="10" fill="#222"/>
+              <g id="head">
+                <rect id="jaw" x="1" y="5" width="4" height="2" fill="#fff"/>
+                <rect x="1" y="1" width="4" height="4" fill="#888"/>
+              </g>
+              <rect id="tail" x="15" y="2" width="4" height="1" fill="#888"/>
+            </svg>"##,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("show.json"),
+        r##"{ "format": 1, "name": "x", "size": [20, 10], "layers": [
+              { "name": "wolf", "type": "image", "image": "wolf",
+                "parts": [ { "id": "jaw" } ] } ] }"##,
+    )
+    .unwrap();
+    let opened = Opened::from_path(dir.path()).unwrap();
+    let wolf = &opened.library[0];
+    assert_eq!(wolf.kind, Kind::Vector);
+    let structure = wolf.structure.as_ref().expect("an SVG has a structure");
+    let rows: Vec<(usize, &str, usize, &[String])> = structure
+        .elements
+        .iter()
+        .map(|e| (e.depth, e.id.as_str(), e.paths, e.parts.as_slice()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (0, "head", 2, &[][..]),
+            (1, "jaw", 1, &["wolf".to_owned()][..]),
+            (0, "tail", 1, &[][..]),
+        ]
+    );
+    assert_eq!((structure.paths, structure.loose), (4, 1));
+}

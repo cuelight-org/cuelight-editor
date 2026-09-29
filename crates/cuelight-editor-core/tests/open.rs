@@ -1,5 +1,8 @@
 //! Opening a show in each of its forms gives the same summary.
 
+// Test code throughout, so clippy lets it panic as tests do.
+#![cfg(test)]
+
 use std::path::Path;
 
 use cuelight_editor_core::assets::{Kind, Use};

@@ -6,7 +6,7 @@
 //! and moves the anchor under it when playing goes on.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use cuelight::{Engine, Pressed};
 use cuelight_core::{Event, Finding, Layer, Traced, Value};
@@ -72,6 +72,13 @@ pub enum What {
     Driver(Step),
 }
 
+/// Lock `engine`, the shared one. A panic elsewhere while it was held
+/// leaves it poisoned; the engine itself is whole then, so the lock is
+/// taken all the same rather than taking the editor down.
+pub fn lock<T>(engine: &Mutex<T>) -> MutexGuard<'_, T> {
+    engine.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// How much of the recent past the panel shows.
 const KEPT: usize = 60;
 
@@ -124,20 +131,14 @@ impl Session {
 
     /// Fire a trigger as a host would, now.
     pub fn fire(&mut self, trigger: &str) {
-        self.engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .trigger(trigger);
+        lock(&self.engine).trigger(trigger);
         self.fired(trigger);
     }
 
     /// Set a variable as a host would, now; recorded, so a scrub replays
     /// it where it was set.
     pub fn set(&mut self, name: &str, value: Value) {
-        self.engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .set_variable(name, value.clone());
+        lock(&self.engine).set_variable(name, value.clone());
         if self.recording {
             self.live.record_set(self.time, name, value.clone());
         }
@@ -148,11 +149,7 @@ impl Session {
     /// A key, by the name a browser gives it; fires what the show says
     /// it means, if anything.
     pub fn key(&mut self, key: &str) -> Option<String> {
-        let fired = self
-            .engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .key(key);
+        let fired = lock(&self.engine).key(key);
         if let Some(trigger) = &fired {
             self.fired(trigger);
         }
@@ -164,11 +161,7 @@ impl Session {
     /// address has that noted and nothing opened: the editor is not the
     /// kiosk.
     pub fn press(&mut self, at: [f64; 2]) -> Option<Pressed> {
-        let pressed = self
-            .engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .press(at)?;
+        let pressed = lock(&self.engine).press(at)?;
         if let Some(trigger) = &pressed.trigger {
             self.fired(trigger);
         }
@@ -180,11 +173,7 @@ impl Session {
 
     /// What the show fired since the last look, added to `happened`.
     pub fn collect_events(&mut self) {
-        let events = self
-            .engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .drain_events();
+        let events = lock(&self.engine).drain_events();
         for event in events {
             #[allow(unreachable_patterns)]
             if let Event::Trigger(name) = event {
@@ -195,20 +184,13 @@ impl Session {
 
     /// The scene that is active now.
     pub fn active_scene(&self) -> Option<String> {
-        self.engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .active_scene()
-            .map(str::to_owned)
+        lock(&self.engine).active_scene().map(str::to_owned)
     }
 
     /// The current value of a variable or a show value, as the engine
     /// reads it.
     pub fn value(&self, name: &str) -> Option<Value> {
-        self.engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .value(name)
+        lock(&self.engine).value(name)
     }
 
     fn fired(&mut self, trigger: &str) {
@@ -225,10 +207,7 @@ impl Session {
     /// entered and the timelines started are on the stage at once.
     fn settle(&mut self) {
         if self.paused {
-            self.engine
-                .lock()
-                .expect("the engine is not poisoned")
-                .advance_to(self.time);
+            lock(&self.engine).advance_to(self.time);
             self.collect_events();
             self.collect_trace();
         }
@@ -261,11 +240,7 @@ impl Session {
     /// What the engine traced since the last look, added to the log in
     /// the trace's own words.
     pub fn collect_trace(&mut self) {
-        let traced = self
-            .engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .drain_trace();
+        let traced = lock(&self.engine).drain_trace();
         if traced.is_empty() {
             return;
         }
@@ -285,7 +260,7 @@ impl Session {
         if dt <= 0.0 {
             return;
         }
-        let mut engine = self.engine.lock().expect("the engine is not poisoned");
+        let mut engine = lock(&self.engine);
         let applied = match &mut self.player {
             Some(player) if self.driving => player.advance(engine.core_mut(), dt),
             _ => Vec::new(),
@@ -319,7 +294,7 @@ impl Session {
     /// paused stays paused there.
     pub fn seek(&mut self, to: f64, now: Instant) {
         let to = to.max(0.0);
-        let mut engine = self.engine.lock().expect("the engine is not poisoned");
+        let mut engine = lock(&self.engine);
         let driver = self.driving.then(|| self.driver.clone()).flatten();
         self.player = cuelight_loader::seek(engine.core_mut(), driver, &self.live, to);
         drop(engine);
@@ -328,7 +303,7 @@ impl Session {
         self.revision += 1;
         // A replay fires the show's own events again and traces every
         // step of it; neither is news, but when the scene was entered is.
-        let mut engine = self.engine.lock().expect("the engine is not poisoned");
+        let mut engine = lock(&self.engine);
         let _ = engine.drain_events();
         let traced = engine.drain_trace();
         drop(engine);
@@ -352,7 +327,7 @@ impl Session {
     /// trigger enters (the first, entered at load), by restarting.
     pub fn enter_scene(&mut self, scene: usize, now: Instant) {
         let trigger = {
-            let engine = self.engine.lock().expect("the engine is not poisoned");
+            let engine = lock(&self.engine);
             let Some(scene) = engine.show().and_then(|show| show.scenes.get(scene)) else {
                 return;
             };
@@ -369,7 +344,7 @@ impl Session {
     /// longest timeline (a loop counts one pass), from when it was
     /// entered; 0 when it has none, or there is no scene.
     pub fn scene_length(&self) -> f64 {
-        let engine = self.engine.lock().expect("the engine is not poisoned");
+        let engine = lock(&self.engine);
         let Some(show) = engine.show() else {
             return 0.0;
         };
@@ -397,11 +372,7 @@ impl Session {
         text: &str,
         now: Instant,
     ) -> Result<Vec<Finding>, cuelight_core::Error> {
-        let findings = self
-            .engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .load_show_tolerant(text)?;
+        let findings = lock(&self.engine).load_show_tolerant(text)?;
         let time = self.time;
         let paused = self.paused;
         self.seek(time, now);
@@ -430,19 +401,12 @@ impl Session {
     }
 
     pub fn restart(&mut self, now: Instant) {
-        self.engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .restart();
+        lock(&self.engine).restart();
         self.player = self.driver.clone().map(DriverPlayer::new);
         self.live = Live::default();
         self.happened.clear();
         self.log.clear_played();
-        let traced = self
-            .engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .drain_trace();
+        let traced = lock(&self.engine).drain_trace();
         self.entered = 0.0;
         self.note_entered(&traced);
         self.anchor = Some(now);

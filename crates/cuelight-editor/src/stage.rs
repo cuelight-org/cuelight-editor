@@ -281,10 +281,7 @@ impl shader::Primitive for Frame {
         viewport: &Viewport,
     ) {
         pipeline.drawn = false;
-        let gpu = pipeline
-            .gpu
-            .get_mut()
-            .expect("the pipeline is not poisoned");
+        let gpu = pipeline.gpu.get_mut().unwrap_or_else(|e| e.into_inner());
         let Some(renderer) = gpu.renderer.as_mut() else {
             return;
         };
@@ -319,7 +316,9 @@ impl shader::Primitive for Frame {
                 size,
             ));
         }
-        let target = pipeline.target.as_ref().expect("just made");
+        let Some(target) = pipeline.target.as_ref() else {
+            return;
+        };
 
         let presented = {
             let engine = match self.engine.lock() {

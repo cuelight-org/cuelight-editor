@@ -75,7 +75,9 @@ pub fn structure(vector: &Vector, name: &str, show: Option<&Show>) -> Structure 
                     nodes.len() - 1
                 }
             };
-            nodes[at].paths += 1;
+            if let Some(node) = nodes.get_mut(at) {
+                node.paths += 1;
+            }
             parent = Some(at);
         }
     }

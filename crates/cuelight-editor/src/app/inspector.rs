@@ -12,7 +12,7 @@ use iced::{Element, Fill, Size, Theme};
 
 use super::{App, Message, Tab, theme};
 use cuelight_editor_core::opened::{self, Summary};
-use cuelight_editor_core::session::Session;
+use cuelight_editor_core::session::{Session, lock};
 
 impl App {
     /// The inspector: the picked layer's properties with their live
@@ -32,7 +32,7 @@ impl App {
         let Some(path) = self.selection.last() else {
             return summary(&self.summary);
         };
-        let engine = session.engine.lock().expect("the engine is not poisoned");
+        let engine = lock(&session.engine);
         let Some(show) = engine.show() else {
             return summary(&self.summary);
         };

@@ -113,9 +113,10 @@ pub fn rows() -> Vec<(String, String)> {
     (0x20u8..0x7F)
         .collect::<Vec<_>>()
         .chunks(16)
-        .map(|chunk| {
+        .filter_map(|chunk| {
+            let first = chunk.first()?;
             let text: String = chunk.iter().map(|&c| c as char).collect();
-            (format!("{:02X}", chunk[0]), text)
+            Some((format!("{first:02X}"), text))
         })
         .collect()
 }
@@ -206,9 +207,11 @@ fn draw(
     let mut style = serde_json::json!({ "file": font, "color": "#FFFFFF" });
     // Only an outline font has a size, and only it can be asked for
     // pixels; a bitmap font is pixels already.
-    if let Some(size) = sizing.size {
-        style["size"] = serde_json::json!(size);
-        style["pixels"] = serde_json::json!(sizing.pixels);
+    if let Some(size) = sizing.size
+        && let Some(style) = style.as_object_mut()
+    {
+        style.insert("size".to_owned(), serde_json::json!(size));
+        style.insert("pixels".to_owned(), serde_json::json!(sizing.pixels));
     }
     // Room for the widest line at the largest size; the rasters are
     // taken from the resolved layers, so the canvas only has to hold

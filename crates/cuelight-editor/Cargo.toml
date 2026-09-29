@@ -45,3 +45,6 @@ web-sys = { version = "0.3", features = [
 
 [dev-dependencies]
 iced_test.workspace = true
+
+[lints]
+workspace = true

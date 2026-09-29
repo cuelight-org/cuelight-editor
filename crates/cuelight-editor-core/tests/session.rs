@@ -1,6 +1,9 @@
 //! A session playing a show with scenes: inputs given by hand, paused or
 //! playing, and a scrub replaying them.
 
+// Test code throughout, so clippy lets it panic as tests do.
+#![cfg(test)]
+
 use cuelight_core::{Property, Value};
 use cuelight_editor_core::session::{Instant, Session, What};
 

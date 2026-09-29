@@ -397,7 +397,9 @@ impl Document {
         let index = container
             .index_of(step)
             .ok_or_else(|| EditError::NotFound(path.clone()))?;
-        let (item, shifted) = container.take(index);
+        let (item, shifted) = container
+            .take(index)
+            .ok_or_else(|| EditError::NotFound(path.clone()))?;
         self.record(Edit::Remove {
             path: path.clone(),
             index,
@@ -615,11 +617,11 @@ impl Node {
         };
         let separator = self.separator();
         let (Node::Array { items, .. } | Node::Object { items, .. }) = self else {
-            unreachable!("checked above");
+            return Err(EditError::NotAContainer(path.clone()));
         };
         let mut item = item;
-        let shifted = if index < items.len() {
-            item.before = std::mem::replace(&mut items[index].before, separator.clone());
+        let shifted = if let Some(next) = items.get_mut(index) {
+            item.before = std::mem::replace(&mut next.before, separator.clone());
             Some(separator)
         } else {
             item.before = if items.is_empty() {
@@ -648,16 +650,20 @@ impl Node {
 
     /// Take out the item at `index`; the item after it, if any, takes
     /// over the text the removed one had before it, and what it had is
-    /// returned beside the item.
-    fn take(&mut self, index: usize) -> (Item, Option<String>) {
+    /// returned beside the item. Nothing is taken from what is not a
+    /// container, or past its end.
+    fn take(&mut self, index: usize) -> Option<(Item, Option<String>)> {
         let (Node::Array { items, .. } | Node::Object { items, .. }) = self else {
-            unreachable!("an edit only names containers");
+            return None;
         };
+        if index >= items.len() {
+            return None;
+        }
         let item = items.remove(index);
         let shifted = items
             .get_mut(index)
             .map(|next| std::mem::replace(&mut next.before, item.before.clone()));
-        (item, shifted)
+        Some((item, shifted))
     }
 
     /// The text this container puts between items: what it already uses,

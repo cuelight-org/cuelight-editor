@@ -156,7 +156,8 @@ impl App {
         let chosen = if pick.alt {
             let last = self.selection.last();
             let at = last.and_then(|last| under.iter().position(|p| p == last));
-            at.map_or(first, |i| &under[(i + 1) % under.len()])
+            at.and_then(|i| under.get((i + 1) % under.len()))
+                .unwrap_or(first)
         } else {
             first
         };

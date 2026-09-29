@@ -87,6 +87,8 @@ pub struct App {
     /// The show's assets, and a thumbnail for each piece of artwork.
     library: Vec<Asset>,
     thumbs: Vec<Option<Thumb>>,
+    /// A sound playing from the library, outside the show's clock.
+    preview: Option<Preview>,
     /// Which asset the library shows the facts of, and the inspector
     /// the preview of.
     selected: Option<usize>,
@@ -150,6 +152,20 @@ enum Thumb {
     Svg(svg::Handle),
 }
 
+/// A sound played once from the library: which asset it is, and since
+/// when. Nothing is recorded and the show does not wake for it.
+#[derive(Debug, Clone)]
+struct Preview {
+    index: usize,
+    sound: String,
+    started: Instant,
+    duration: f64,
+}
+
+/// The voice a preview plays under. The engine's own voice ids count up
+/// from one and never reach this.
+const PREVIEW_VOICE: u64 = u64::MAX;
+
 /// The stage's magnification.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Zoom {
@@ -208,6 +224,9 @@ pub enum Message {
     Reveal(String),
     /// The preview at the artwork's own size, or fitted.
     ActualSize(bool),
+    /// The play button of a sound in the library: play it once, or stop
+    /// it while it plays.
+    Preview(usize),
     /// A click on the stage at a canvas point: pick the layer there.
     Pick([f64; 2], Pick),
     /// A layer picked in the tree.
@@ -242,6 +261,7 @@ impl App {
             summary: Summary::default(),
             library: Vec::new(),
             thumbs: Vec::new(),
+            preview: None,
             selected: None,
             actual_size: false,
             tab: Tab::Layers,
@@ -395,6 +415,9 @@ impl App {
                     && !session.paused
                 {
                     session.tick(now);
+                    self.hear();
+                } else if self.preview.is_some() {
+                    // Paused, but a previewed sound plays on its own clock.
                     self.hear();
                 }
                 #[cfg(not(target_arch = "wasm32"))]
@@ -569,6 +592,26 @@ impl App {
                 self.actual_size = on;
                 Task::none()
             }
+            Message::Preview(index) => {
+                match &self.preview {
+                    Some(preview) if preview.index == index => self.preview = None,
+                    _ => {
+                        let duration = self.library.get(index).and_then(|asset| {
+                            let session = self.session.as_ref()?;
+                            let engine = session.engine.lock().expect("the engine is not poisoned");
+                            Some((asset.name.clone(), engine.sound_duration(&asset.name)?))
+                        });
+                        self.preview = duration.map(|(sound, duration)| Preview {
+                            index,
+                            sound,
+                            started: Instant::now(),
+                            duration,
+                        });
+                    }
+                }
+                self.hear();
+                Task::none()
+            }
             Message::Pick(point, pick) => {
                 let Some(session) = &self.session else {
                     return Task::none();
@@ -699,6 +742,7 @@ impl App {
                 self.summary = summary;
                 self.thumbs = thumbs(&engine, &library);
                 self.library = library;
+                self.preview = None;
                 self.selected = None;
                 self.rows = engine.show().map(tree::rows).unwrap_or_default();
                 self.selection.clear();
@@ -795,40 +839,70 @@ impl App {
         )
     }
 
-    /// Play what the show sounds like now.
-    fn hear(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let (Some(audio), Some(session)) = (&self.audio, &self.session) {
-            let engine = session.engine.lock().expect("the engine is not poisoned");
-            match engine.voices() {
-                Ok(voices) => audio.apply(&voices),
-                Err(error) => log::warn!("voices: {error}"),
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        if let (Some(audio), Some(session)) = (&self.audio, &self.session)
-            && let Ok(mut audio) = audio.try_borrow_mut()
+    /// The voices to play now: the show's while it plays (with `show`),
+    /// and the sound previewed from the library, which keeps its own
+    /// clock and is over once it has run its length.
+    fn voices(&mut self, show: bool) -> Vec<cuelight_core::Voice> {
+        let mut voices = Vec::new();
+        if show
+            && let Some(session) = &self.session
+            && !session.paused
         {
             let engine = session.engine.lock().expect("the engine is not poisoned");
             match engine.voices() {
-                Ok(voices) => audio.apply(&voices),
+                Ok(heard) => voices = heard,
                 Err(error) => log::warn!("voices: {error}"),
             }
         }
+        if let Some(preview) = &self.preview {
+            let position = preview.started.elapsed().as_secs_f64();
+            if position >= preview.duration {
+                self.preview = None;
+            } else {
+                voices.push(cuelight_core::Voice {
+                    id: PREVIEW_VOICE,
+                    layer: "library".to_owned(),
+                    sound: preview.sound.clone(),
+                    position,
+                    gain: 1.0,
+                    looping: false,
+                    bus: None,
+                });
+            }
+        }
+        voices
     }
 
-    /// Silence, for a scrub or a pause.
+    /// Play what the show sounds like now, and the preview if one plays.
+    fn hear(&mut self) {
+        let voices = self.voices(true);
+        self.play(&voices);
+    }
+
+    /// Silence the show, for a scrub or a pause; a preview plays on.
     fn hush(&mut self) {
+        let voices = self.voices(false);
+        self.play(&voices);
+    }
+
+    /// Hand `voices` to the sound device or the browser's audio.
+    fn play(&mut self, voices: &[cuelight_core::Voice]) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(audio) = &self.audio {
-            audio.apply(&[]);
+            audio.apply(voices);
         }
         #[cfg(target_arch = "wasm32")]
         if let Some(audio) = &self.audio
             && let Ok(mut audio) = audio.try_borrow_mut()
         {
-            audio.apply(&[]);
+            audio.apply(voices);
         }
+    }
+
+    /// Whether a sound can be heard at all: there is a device or a
+    /// browser to play it, and `--silent` was not asked.
+    fn can_play(&self) -> bool {
+        self.audio.is_some()
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -847,7 +921,12 @@ impl App {
         let waiting_to_shoot = self.session.is_some() && self.screenshot.is_some();
         #[cfg(target_arch = "wasm32")]
         let waiting_to_shoot = false;
-        if self.session.as_ref().is_some_and(|s| !s.paused) || waiting_to_shoot {
+        // Frames while the show plays, and while a previewed sound does:
+        // its end is noticed on a frame.
+        if self.session.as_ref().is_some_and(|s| !s.paused)
+            || waiting_to_shoot
+            || self.preview.is_some()
+        {
             subscriptions.push(iced::window::frames().map(Message::Tick));
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1553,6 +1632,10 @@ impl App {
             if asset.uses.is_empty() {
                 facts.push_str(", unused");
             }
+            let playing = self.preview.as_ref().is_some_and(|p| p.index == i);
+            if playing {
+                facts.push_str(", playing");
+            }
             let line = row![
                 thumb,
                 column![text(&asset.name).size(14), text(facts).size(12)].spacing(2)
@@ -1566,7 +1649,19 @@ impl App {
             if self.selected == Some(i) {
                 b = b.style(button::secondary);
             }
-            panel = panel.push(b);
+            if asset.kind == Kind::Sound {
+                // Played once from here, outside the show's clock; the
+                // same press stops it. Nothing to press when there is no
+                // sound to be had.
+                let mut play = button(text(if playing { "stop" } else { "play" }).size(12))
+                    .style(button::secondary);
+                if self.can_play() {
+                    play = play.on_press(Message::Preview(i));
+                }
+                panel = panel.push(row![b, play].spacing(4).align_y(iced::Center));
+            } else {
+                panel = panel.push(b);
+            }
             if self.selected == Some(i) {
                 panel = panel.push(container(picked(asset)).padding([4, 12]));
             }

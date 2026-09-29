@@ -816,7 +816,7 @@ dependencies = [
 [[package]]
 name = "cuelight"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=2b9dce896efcb12e78f4d77723fdb657addca6ac#2b9dce896efcb12e78f4d77723fdb657addca6ac"
+source = "git+https://github.com/francisdb/cuelight?rev=a7d3d56bfea11875becf912bcc24e09e578af59a#a7d3d56bfea11875becf912bcc24e09e578af59a"
 dependencies = [
  "cuelight-core",
  "png 0.18.1",
@@ -829,7 +829,7 @@ dependencies = [
 [[package]]
 name = "cuelight-audio"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=2b9dce896efcb12e78f4d77723fdb657addca6ac#2b9dce896efcb12e78f4d77723fdb657addca6ac"
+source = "git+https://github.com/francisdb/cuelight?rev=a7d3d56bfea11875becf912bcc24e09e578af59a#a7d3d56bfea11875becf912bcc24e09e578af59a"
 dependencies = [
  "cpal",
  "cuelight-core",
@@ -845,7 +845,7 @@ dependencies = [
 [[package]]
 name = "cuelight-core"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=2b9dce896efcb12e78f4d77723fdb657addca6ac#2b9dce896efcb12e78f4d77723fdb657addca6ac"
+source = "git+https://github.com/francisdb/cuelight?rev=a7d3d56bfea11875becf912bcc24e09e578af59a#a7d3d56bfea11875becf912bcc24e09e578af59a"
 dependencies = [
  "serde",
  "serde_json",
@@ -896,7 +896,7 @@ dependencies = [
 [[package]]
 name = "cuelight-loader"
 version = "0.0.1"
-source = "git+https://github.com/francisdb/cuelight?rev=2b9dce896efcb12e78f4d77723fdb657addca6ac#2b9dce896efcb12e78f4d77723fdb657addca6ac"
+source = "git+https://github.com/francisdb/cuelight?rev=a7d3d56bfea11875becf912bcc24e09e578af59a#a7d3d56bfea11875becf912bcc24e09e578af59a"
 dependencies = [
  "cuelight",
  "cuelight-core",
@@ -1083,7 +1083,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2807,7 +2807,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3302,7 +3302,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3315,7 +3315,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3832,7 +3832,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4618,7 +4618,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4727,15 +4727,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]

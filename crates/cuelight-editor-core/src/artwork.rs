@@ -160,6 +160,7 @@ mod tests {
         VectorPath {
             elements: Vec::new(),
             fill: Some([0, 0, 0, 255]),
+            gradient: None,
             stroke: None,
             ids: ids.iter().map(|s| (*s).to_owned()).collect(),
         }

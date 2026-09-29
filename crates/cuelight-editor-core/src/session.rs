@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use cuelight::{Engine, Pressed};
-use cuelight_core::{Event, Finding, Value};
+use cuelight_core::{Event, Finding, Layer, Traced, Value};
 use cuelight_loader::{Applied, Driver, DriverPlayer, Live};
 use std::time::Duration;
 
@@ -30,6 +30,9 @@ pub struct Session {
     /// The show's time, in seconds.
     pub time: f64,
     pub paused: bool,
+    /// When the active scene was entered, on the show's clock: what the
+    /// scene's own clock counts from.
+    pub entered: f64,
     /// Bumped whenever the show moved, so a frame is redrawn only then.
     pub revision: u64,
     /// Inputs fired by hand are recorded, so a scrub replays them.
@@ -83,6 +86,7 @@ impl Session {
             time: 0.0,
             // A show opens paused at 0; playing is asked for.
             paused: true,
+            entered: 0.0,
             revision: 0,
             recording: true,
             driving: true,
@@ -265,6 +269,7 @@ impl Session {
         if traced.is_empty() {
             return;
         }
+        self.note_entered(&traced);
         self.log.extend(traced.iter().map(log::traced));
         self.revision += 1;
     }
@@ -322,10 +327,59 @@ impl Session {
         self.anchor = now.checked_sub(Duration::from_secs_f64(to));
         self.revision += 1;
         // A replay fires the show's own events again and traces every
-        // step of it; neither is news.
+        // step of it; neither is news, but when the scene was entered is.
         let mut engine = self.engine.lock().expect("the engine is not poisoned");
         let _ = engine.drain_events();
-        let _ = engine.drain_trace();
+        let traced = engine.drain_trace();
+        drop(engine);
+        self.note_entered(&traced);
+    }
+
+    /// Take when the active scene was entered from what the engine
+    /// traced: the last entry in it, if any.
+    fn note_entered(&mut self, traced: &[Traced]) {
+        if let Some(entry) = traced
+            .iter()
+            .rev()
+            .find(|t| matches!(t.what, cuelight_core::Happened::Entered { .. }))
+        {
+            self.entered = entry.at;
+        }
+    }
+
+    /// Enter scene `scene`, paused at the instant it is entered: by
+    /// firing its first trigger as a hand input, or, for a scene no
+    /// trigger enters (the first, entered at load), by restarting.
+    pub fn enter_scene(&mut self, scene: usize, now: Instant) {
+        let trigger = {
+            let engine = self.engine.lock().expect("the engine is not poisoned");
+            let Some(scene) = engine.show().and_then(|show| show.scenes.get(scene)) else {
+                return;
+            };
+            scene.trigger.iter().next().map(str::to_owned)
+        };
+        self.paused = true;
+        match trigger {
+            Some(trigger) => self.fire(&trigger),
+            None => self.restart(now),
+        }
+    }
+
+    /// How long the active scene's own clock runs: to the end of its
+    /// longest timeline (a loop counts one pass), from when it was
+    /// entered; 0 when it has none, or there is no scene.
+    pub fn scene_length(&self) -> f64 {
+        let engine = self.engine.lock().expect("the engine is not poisoned");
+        let Some(show) = engine.show() else {
+            return 0.0;
+        };
+        let Some(scene) = engine
+            .active_scene()
+            .and_then(|name| show.scenes.iter().find(|s| s.name == name))
+        else {
+            return 0.0;
+        };
+        longest(&scene.layers)
     }
 
     /// The show changed under the session: load the new document, as
@@ -384,13 +438,38 @@ impl Session {
         self.live = Live::default();
         self.happened.clear();
         self.log.clear_played();
-        let _ = self
+        let traced = self
             .engine
             .lock()
             .expect("the engine is not poisoned")
             .drain_trace();
+        self.entered = 0.0;
+        self.note_entered(&traced);
         self.anchor = Some(now);
         self.time = 0.0;
         self.revision += 1;
     }
+}
+
+/// The end of the longest timeline among `layers` and their children,
+/// after its delay; a loop counts one pass.
+fn longest(layers: &[Layer]) -> f64 {
+    layers
+        .iter()
+        .map(|layer| {
+            let own = layer
+                .timelines
+                .iter()
+                .map(|t| {
+                    t.delay
+                        + if t.looping {
+                            t.duration()
+                        } else {
+                            t.play_time()
+                        }
+                })
+                .fold(0.0_f64, f64::max);
+            own.max(longest(layer.children()))
+        })
+        .fold(0.0_f64, f64::max)
 }

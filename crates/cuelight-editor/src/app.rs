@@ -137,6 +137,9 @@ pub struct App {
     fitted: Cell<f32>,
     /// Whether the log below the stage is unfolded, or just its header.
     log_open: bool,
+    /// Whether the playhead counts from when the active scene was
+    /// entered, rather than from the start of the session.
+    follow_scene: bool,
     /// Where the stage is scrolled to, as the last scroll left it; `None`
     /// while it is centred on the show, which a fresh open and a fit ask
     /// for. A zoom step scales it, so the point under the middle of the
@@ -252,6 +255,11 @@ pub enum Message {
     Seek(f64),
     /// Forwards or back by this many seconds, paused.
     Step(f64),
+    /// A scene's heading clicked in the tree: enter that scene, paused.
+    EnterScene(usize),
+    /// Count the playhead from when the active scene was entered, or
+    /// from the start of the session.
+    FollowScene(bool),
     /// A key went down; the show's keys come first, then the editor's.
     KeyPressed(iced::keyboard::Key, iced::keyboard::Modifiers),
     /// A press on the stage, at a canvas point.
@@ -358,6 +366,7 @@ impl App {
             scale_factor: 1.0,
             fitted: Cell::new(1.0),
             log_open: true,
+            follow_scene: false,
         };
         // A show on the command line opens at once (desktop only).
         #[cfg(not(target_arch = "wasm32"))]
@@ -514,6 +523,18 @@ impl App {
                     session.step(dt, Instant::now());
                     self.hush();
                 }
+                Task::none()
+            }
+            Message::EnterScene(scene) => {
+                if let Some(session) = &mut self.session {
+                    session.enter_scene(scene, Instant::now());
+                    self.follow_scene = true;
+                    self.hush();
+                }
+                Task::none()
+            }
+            Message::FollowScene(on) => {
+                self.follow_scene = on;
                 Task::none()
             }
             Message::KeyPressed(key, modifiers) => {
@@ -848,6 +869,7 @@ impl App {
                 self.preview = None;
                 self.selected = None;
                 self.rows = engine.show().map(tree::rows).unwrap_or_default();
+                self.follow_scene = false;
                 self.selection.clear();
                 self.expanded = None;
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
@@ -1068,12 +1090,20 @@ impl App {
         }
         if let Some(session) = &self.session {
             // The playhead covers one pass of the driver, or as far as
-            // the show has played, whichever is longer.
-            let end = session
-                .pass_length()
-                .unwrap_or(60.0)
-                .max(session.time)
-                .max(1.0);
+            // the show has played, whichever is longer. Following the
+            // scene, it counts from when the scene was entered, to the
+            // end of its longest timeline.
+            let scenes = self.summary.scenes > 0;
+            let follow = self.follow_scene && scenes;
+            let from = if follow { session.entered } else { 0.0 };
+            let time = session.time - from;
+            let end = if follow {
+                session.scene_length()
+            } else {
+                session.pass_length().unwrap_or(60.0)
+            }
+            .max(time)
+            .max(1.0);
             bar = bar
                 .push(space::horizontal().width(16))
                 .push(button("|<").on_press(Message::Restart))
@@ -1084,12 +1114,20 @@ impl App {
                 )
                 .push(button(">").on_press(Message::Step(1.0 / 60.0)))
                 .push(
-                    slider(0.0..=end, session.time, Message::Seek)
+                    slider(0.0..=end, time, move |t| Message::Seek(from + t))
                         .step(1.0 / 60.0)
                         .width(Fill),
                 )
-                .push(text(format!("{:7.2} / {end:.0} s", session.time)).size(14))
+                .push(text(format!("{time:7.2} / {end:.0} s")).size(14))
                 .push(space::horizontal().width(16));
+            if scenes {
+                bar = bar.push(
+                    toggler(follow)
+                        .label("Scene clock")
+                        .on_toggle(Message::FollowScene)
+                        .size(16),
+                );
+            }
             if session.has_driver() {
                 bar = bar.push(
                     toggler(session.driving)
@@ -1383,15 +1421,29 @@ impl App {
         let active = session.active_scene();
         for row_ in &self.rows {
             match row_ {
-                Row::Root { root, name } => {
-                    let heading = match root {
-                        cuelight_core::Root::Show => "SHOW".to_owned(),
-                        cuelight_core::Root::Scene(_) if active.as_deref() == Some(name) => {
-                            format!("SCENE {name} *")
-                        }
-                        cuelight_core::Root::Scene(_) => format!("SCENE {name}"),
+                Row::Root {
+                    root: cuelight_core::Root::Show,
+                    ..
+                } => {
+                    panel = panel.push(container(text("SHOW").size(12)).padding([6, 0]));
+                }
+                // A scene's heading enters the scene.
+                Row::Root {
+                    root: cuelight_core::Root::Scene(i),
+                    name,
+                } => {
+                    let heading = if active.as_deref() == Some(name) {
+                        format!("SCENE {name} *")
+                    } else {
+                        format!("SCENE {name}")
                     };
-                    panel = panel.push(container(text(heading).size(12)).padding([6, 0]));
+                    panel = panel.push(
+                        button(text(heading).size(12))
+                            .on_press(Message::EnterScene(*i))
+                            .width(Fill)
+                            .padding([6, 0])
+                            .style(button::text),
+                    );
                 }
                 Row::Layer {
                     path,

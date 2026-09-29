@@ -8,10 +8,12 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use cuelight::Engine;
+use cuelight::{Engine, Pressed};
 use cuelight_core::{Event, Finding, Value};
 use cuelight_loader::{Applied, Driver, DriverPlayer, Live};
 use std::time::Duration;
+
+use crate::log::{self, Log};
 
 pub use cuelight_loader::Step;
 pub use web_time::Instant;
@@ -37,6 +39,12 @@ pub struct Session {
     /// What happened lately, newest last: inputs given, driver steps
     /// applied and events the show fired, with the show time of each.
     pub happened: VecDeque<Happened>,
+    /// The log below the stage: what is said of the document, and what
+    /// happened while the show played, one line each, newest last.
+    pub log: Log,
+    /// The paths of the show's files, for the audit to know what is
+    /// there; empty when the show came without a folder.
+    pub files: Vec<String>,
 }
 
 /// One thing that happened in a session.
@@ -54,6 +62,9 @@ pub enum What {
     Set(String, Value),
     /// A trigger the show fired itself: an `on_end`, a scene entered.
     Event(String),
+    /// A press asked for a web address to be opened; the editor only
+    /// notes it.
+    Opened(String),
     /// A step of the driver, applied at its own instant.
     Driver(Step),
 }
@@ -76,7 +87,19 @@ impl Session {
             recording: true,
             driving: true,
             happened: VecDeque::new(),
+            log: Log::default(),
+            files: Vec::new(),
         }
+    }
+
+    /// Audit `json`, the document as written, against the show's files
+    /// and its driver, and put what it says in the log in place of the
+    /// last audit.
+    pub fn audit(&mut self, json: &str) {
+        self.log.clear_audit();
+        self.log
+            .extend(log::audit(json, &self.files, self.driver.as_ref()));
+        self.revision += 1;
     }
 
     /// Whether the show came with a driver at all.
@@ -132,17 +155,22 @@ impl Session {
     }
 
     /// A press at a canvas point; fires the pressable layer there or the
-    /// show's press-anywhere trigger, if any.
-    pub fn press(&mut self, at: [f64; 2]) -> Option<String> {
-        let fired = self
+    /// show's press-anywhere trigger, if any. A layer that opens a web
+    /// address has that noted and nothing opened: the editor is not the
+    /// kiosk.
+    pub fn press(&mut self, at: [f64; 2]) -> Option<Pressed> {
+        let pressed = self
             .engine
             .lock()
             .expect("the engine is not poisoned")
-            .press(at);
-        if let Some(trigger) = &fired {
+            .press(at)?;
+        if let Some(trigger) = &pressed.trigger {
             self.fired(trigger);
         }
-        fired
+        if let Some(url) = &pressed.open {
+            self.note(What::Opened(url.clone()));
+        }
+        Some(pressed)
     }
 
     /// What the show fired since the last look, added to `happened`.
@@ -191,10 +219,36 @@ impl Session {
     }
 
     fn note_at(&mut self, at: f64, what: What) {
+        let line = match &what {
+            What::Fired(trigger) => Some(log::fired(at, trigger)),
+            What::Set(name, value) => Some(log::set(at, name, value)),
+            What::Opened(url) => Some(log::opened(at, url)),
+            What::Driver(step) => log::driver(at, step),
+            // The trace says this in the engine's own words.
+            What::Event(_) => None,
+        };
+        if let Some(line) = line {
+            self.log.push(line);
+        }
         self.happened.push_back(Happened { at, what });
         while self.happened.len() > KEPT {
             self.happened.pop_front();
         }
+        self.revision += 1;
+    }
+
+    /// What the engine traced since the last look, added to the log in
+    /// the trace's own words.
+    pub fn collect_trace(&mut self) {
+        let traced = self
+            .engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .drain_trace();
+        if traced.is_empty() {
+            return;
+        }
+        self.log.extend(traced.iter().map(log::traced));
         self.revision += 1;
     }
 
@@ -224,6 +278,7 @@ impl Session {
             }
         }
         self.collect_events();
+        self.collect_trace();
     }
 
     pub fn toggle_pause(&mut self, now: Instant) {
@@ -249,12 +304,11 @@ impl Session {
         self.time = to;
         self.anchor = now.checked_sub(Duration::from_secs_f64(to));
         self.revision += 1;
-        // A replay fires the show's own events again; they are not news.
-        let _ = self
-            .engine
-            .lock()
-            .expect("the engine is not poisoned")
-            .drain_events();
+        // A replay fires the show's own events again and traces every
+        // step of it; neither is news.
+        let mut engine = self.engine.lock().expect("the engine is not poisoned");
+        let _ = engine.drain_events();
+        let _ = engine.drain_trace();
     }
 
     /// The show changed under the session: load the new document, as
@@ -263,6 +317,10 @@ impl Session {
     /// the replay. What the load dropped comes back as findings; only a
     /// text that is no document at all is an error, and then the show
     /// that was playing stays.
+    ///
+    /// The document is not audited here: an audit of a large show takes
+    /// longer than a frame, so the caller runs [`Session::audit`] once the
+    /// show is back on screen.
     pub fn reload(
         &mut self,
         text: &str,
@@ -308,6 +366,12 @@ impl Session {
         self.player = self.driver.clone().map(DriverPlayer::new);
         self.live = Live::default();
         self.happened.clear();
+        self.log.clear_played();
+        let _ = self
+            .engine
+            .lock()
+            .expect("the engine is not poisoned")
+            .drain_trace();
         self.anchor = Some(now);
         self.time = 0.0;
         self.revision += 1;

@@ -82,8 +82,9 @@ fn places(show: &Show, triggers: &BTreeSet<String>) -> BTreeMap<String, Place> {
 
 fn presses(layers: &[Layer], out: &mut Vec<(String, String)>) {
     for layer in layers {
-        if let Some(press) = &layer.press {
-            out.push((layer.name.clone(), press.trigger.clone()));
+        // A press that only opens a link fires nothing a panel can offer.
+        if let Some(trigger) = layer.press.as_ref().and_then(|p| p.trigger.clone()) {
+            out.push((layer.name.clone(), trigger));
         }
         presses(layer.children(), out);
     }

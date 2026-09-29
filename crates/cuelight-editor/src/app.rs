@@ -21,7 +21,7 @@ use iced::{ContentFit, Element, Fill, Size, Subscription, Task, Theme};
 use crate::dialog::{self, Picked};
 use crate::stage::{Pick, Stage};
 use cuelight_editor_core::opened::{self, Opened, Summary};
-use cuelight_editor_core::session::{Session, Step, What};
+use cuelight_editor_core::session::Session;
 
 /// What the command line asked for (desktop only).
 #[cfg(not(target_arch = "wasm32"))]
@@ -123,6 +123,8 @@ pub struct App {
     /// The scale that fits the show into the stage area, as the last
     /// layout found it: what zooming in or out starts from while fitted.
     fitted: Cell<f32>,
+    /// Whether the log below the stage is unfolded, or just its header.
+    log_open: bool,
 }
 
 /// An area of the window.
@@ -214,6 +216,8 @@ pub enum Message {
     Deselect,
     /// An inspector row unfolded, or all folded.
     Expand(Option<Property>),
+    /// The log below the stage folded to its header, or unfolded.
+    ToggleLog,
     /// A split between two areas dragged.
     Resized(pane_grid::ResizeEvent),
     /// The window's scale factor, found or changed.
@@ -268,6 +272,7 @@ impl App {
             zoom: Zoom::Fit,
             scale_factor: 1.0,
             fitted: Cell::new(1.0),
+            log_open: true,
         };
         // A show on the command line opens at once (desktop only).
         #[cfg(not(target_arch = "wasm32"))]
@@ -486,6 +491,10 @@ impl App {
                 }
                 Task::none()
             }
+            Message::ToggleLog => {
+                self.log_open = !self.log_open;
+                Task::none()
+            }
             Message::Drive(on) => {
                 if let Some(session) = &mut self.session {
                     session.set_driving(on, Instant::now());
@@ -682,6 +691,8 @@ impl App {
                     sound_files,
                     sounds,
                     library,
+                    files,
+                    document,
                     ..
                 } = opened;
                 self.source = source;
@@ -695,7 +706,15 @@ impl App {
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
                 self.edits.clear();
                 let task = self.listen(&sounds, sound_files);
-                self.session = Some(Session::new(engine, driver));
+                let mut session = Session::new(engine, driver);
+                // The log opens with what the load had to say and what
+                // the audit makes of the document as written.
+                session.files = files.keys().cloned().collect();
+                session
+                    .log
+                    .extend(cuelight_editor_core::log::load(&self.summary.problems));
+                session.audit(&document.text());
+                self.session = Some(session);
                 // The window's scale factor bounds the zoom; ask once a
                 // window is there to ask.
                 let rescaled = iced::window::latest()
@@ -913,7 +932,11 @@ impl App {
                             .width(Fill)
                             .height(Fill),
                     ),
-                    Pane::Stage => responsive(move |size| self.stage(session, size)).into(),
+                    Pane::Stage => column![
+                        responsive(move |size| self.stage(session, size)),
+                        self.log_panel(session),
+                    ]
+                    .into(),
                     Pane::Library => self.library_panel(session),
                     // The preview of an asset fits the pane, so the pane
                     // says how large it is.
@@ -1030,7 +1053,7 @@ impl App {
     }
 
     /// The show's inputs: triggers as buttons, variables as fields, the
-    /// show's own values as readouts, and what happened lately.
+    /// show's own values as readouts.
     fn inputs_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
         let mut panel = Column::new().spacing(6).padding(12);
         panel = panel.push(
@@ -1099,34 +1122,51 @@ impl App {
                     .push(row![text(name).size(14).width(Fill), text(shown).size(14)].spacing(8));
             }
         }
-        if !session.happened.is_empty() {
-            panel = panel.push(text("HAPPENED").size(12));
-            for item in session.happened.iter().rev().take(14) {
-                let line = match &item.what {
-                    What::Fired(t) => format!("{:6.2}  fired {t}", item.at),
-                    What::Set(n, v) => format!("{:6.2}  {n} = {}", item.at, inputs::show_value(v)),
-                    What::Event(t) => format!("{:6.2}  show fired {t}", item.at),
-                    What::Driver(Step::Trigger { trigger }) => {
-                        format!("{:6.2}  driver fired {trigger}", item.at)
-                    }
-                    What::Driver(Step::Set { set }) => {
-                        let sets = set
-                            .iter()
-                            .map(|(n, v)| format!("{n} = {}", inputs::show_value(v)))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        format!("{:6.2}  driver set {sets}", item.at)
-                    }
-                    What::Driver(_) => continue,
-                };
-                panel = panel.push(text(line).size(12));
-            }
-        }
         panel
     }
 }
 
 impl App {
+    /// The log under the stage: a header saying how many lines, which
+    /// folds it to itself; unfolded, the lines follow the newest.
+    fn log_panel<'a>(&'a self, session: &'a Session) -> Element<'a, Message> {
+        const HEIGHT: f32 = 160.0;
+        let count = session.log.len();
+        let header = row![
+            text("LOG").size(12),
+            text(format!("{count} line(s)")).size(12),
+            space::horizontal(),
+            button(text(if self.log_open { "fold" } else { "unfold" }).size(12))
+                .on_press(Message::ToggleLog)
+                .style(button::text),
+        ]
+        .spacing(12)
+        .align_y(iced::Center);
+        let mut panel = column![container(header).padding([0, 8]).width(Fill)].spacing(4);
+        if self.log_open {
+            let mut lines = Column::new().spacing(1).padding([0, 8]);
+            for line in session.log.lines() {
+                lines = lines.push(
+                    text(line.render())
+                        .size(12)
+                        .font(iced::Font::new("DM Mono"))
+                        .wrapping(text::Wrapping::None),
+                );
+            }
+            panel = panel.push(
+                scrollable(lines)
+                    .direction(Direction::Both {
+                        vertical: Scrollbar::default(),
+                        horizontal: Scrollbar::default(),
+                    })
+                    .anchor_bottom()
+                    .width(Fill)
+                    .height(HEIGHT),
+            );
+        }
+        container(panel).padding([4, 0]).width(Fill).into()
+    }
+
     /// The library area: a tab row over the show's layers or its assets.
     fn library_panel<'a>(&'a self, session: &'a Session) -> Element<'a, Message> {
         let tab = |label: &'a str, tab: Tab| {
@@ -1818,6 +1858,7 @@ pub fn theme(_: &App) -> Theme {
 mod tests {
     use super::*;
     use cuelight_core::Value;
+    use cuelight_editor_core::session::{Step, What};
     use iced_test::simulator;
 
     #[test]

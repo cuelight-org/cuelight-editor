@@ -888,6 +888,7 @@ dependencies = [
  "cuelight-loader",
  "log",
  "serde_json",
+ "skrifa 0.44.0",
  "tempfile",
  "web-time",
 ]

@@ -36,6 +36,10 @@ pub struct Options {
     /// Pick the layer under this canvas point once the show is open.
     #[arg(long, value_name = "X,Y", value_parser = parse_point)]
     pub pick: Option<[f64; 2]>,
+    /// Show this asset in the inspector once the show is open, by its
+    /// name in the library.
+    #[arg(long, value_name = "NAME")]
+    pub asset: Option<String>,
     /// Fire a trigger once the show is open; repeatable, in order.
     #[arg(long, value_name = "TRIGGER")]
     pub trigger: Vec<String>,
@@ -83,8 +87,12 @@ pub struct App {
     /// The show's assets, and a thumbnail for each piece of artwork.
     library: Vec<Asset>,
     thumbs: Vec<Option<Thumb>>,
-    /// Which asset the library shows the facts of.
+    /// Which asset the library shows the facts of, and the inspector
+    /// the preview of.
     selected: Option<usize>,
+    /// The preview draws the artwork at its own size rather than fitted
+    /// to the inspector.
+    actual_size: bool,
     /// What the library area shows.
     tab: Tab,
     /// The tree's rows, as the open show has them.
@@ -192,6 +200,12 @@ pub enum Message {
     Tab(Tab),
     /// An asset picked in the library, or the pick cleared.
     Select(Option<usize>),
+    /// An asset picked by its name, from the command line: the assets
+    /// tab opens on it.
+    #[cfg(not(target_arch = "wasm32"))]
+    Reveal(String),
+    /// The preview at the artwork's own size, or fitted.
+    ActualSize(bool),
     /// A click on the stage at a canvas point: pick the layer there.
     Pick([f64; 2], Pick),
     /// A layer picked in the tree.
@@ -225,6 +239,7 @@ impl App {
             library: Vec::new(),
             thumbs: Vec::new(),
             selected: None,
+            actual_size: false,
             tab: Tab::Layers,
             rows: Vec::new(),
             selection: Vec::new(),
@@ -273,6 +288,9 @@ impl App {
             }
             if let Some(point) = options.pick {
                 then = then.chain(Task::done(Message::Pick(point, Pick::default())));
+            }
+            if let Some(name) = options.asset {
+                then = then.chain(Task::done(Message::Reveal(name)));
             }
             (app, open.chain(then))
         }
@@ -524,6 +542,24 @@ impl App {
                 self.selected = index.filter(|i| *i < self.library.len());
                 Task::none()
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::Reveal(name) => {
+                match self.library.iter().position(|a| a.name == name) {
+                    Some(index) => {
+                        self.tab = Tab::Assets;
+                        self.selected = Some(index);
+                    }
+                    None => {
+                        self.status = format!("no asset {name:?} in this show");
+                        log::warn!("{}", self.status);
+                    }
+                }
+                Task::none()
+            }
+            Message::ActualSize(on) => {
+                self.actual_size = on;
+                Task::none()
+            }
             Message::Pick(point, pick) => {
                 let Some(session) = &self.session else {
                     return Task::none();
@@ -534,15 +570,19 @@ impl App {
                     .expect("the engine is not poisoned")
                     .layers_at(point);
                 self.pick(under, pick);
+                // A layer picked is what the inspector shows now.
+                self.selected = None;
                 Task::none()
             }
             Message::Choose(path) => {
                 self.selection = vec![path];
+                self.selected = None;
                 self.expanded = None;
                 Task::none()
             }
             Message::Deselect => {
                 self.selection.clear();
+                self.selected = None;
                 self.expanded = None;
                 Task::none()
             }
@@ -875,10 +915,14 @@ impl App {
                     ),
                     Pane::Stage => responsive(move |size| self.stage(session, size)).into(),
                     Pane::Library => self.library_panel(session),
-                    Pane::Inspector => scrollable(self.inspector_panel(session))
-                        .width(Fill)
-                        .height(Fill)
-                        .into(),
+                    // The preview of an asset fits the pane, so the pane
+                    // says how large it is.
+                    Pane::Inspector => responsive(move |size| {
+                        scrollable(self.inspector_panel(session, size))
+                            .width(Fill)
+                            .height(Fill)
+                    })
+                    .into(),
                 })
             })
             .on_resize(8, Message::Resized)
@@ -1155,7 +1199,13 @@ impl App {
     /// The inspector: the picked layer's properties with their live
     /// values and where each comes from, its bindings and timelines, and
     /// its JSON; the show's own facts while nothing is picked.
-    fn inspector_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
+    fn inspector_panel<'a>(&'a self, session: &'a Session, size: Size) -> Column<'a, Message> {
+        if self.tab == Tab::Assets
+            && let Some(i) = self.selected
+            && matches!(self.library[i].kind, Kind::Image | Kind::Vector)
+        {
+            return self.preview(session, i, size);
+        }
         let Some(path) = self.selection.last() else {
             return summary(&self.summary);
         };
@@ -1485,6 +1535,155 @@ impl App {
     }
 }
 
+impl App {
+    /// The picked artwork, large: fitted to the pane or at its own size,
+    /// on the show's background; for vector artwork, the element ids it
+    /// is made of and which of them the show moves as parts.
+    fn preview<'a>(&'a self, session: &'a Session, i: usize, size: Size) -> Column<'a, Message> {
+        const PADDING: f32 = 12.0;
+        /// What a scrollbar covers, as on the stage: room past the
+        /// artwork's bottom edge while it scrolls sideways.
+        const SCROLLBAR: f32 = 10.0;
+        let asset = &self.library[i];
+        let mut panel = Column::new().spacing(4).padding(PADDING);
+        panel = panel.push(text(&asset.name).size(16));
+        let facts = match (asset.kind, asset.size) {
+            (Kind::Image, Some([w, h])) => format!("image, {w} x {h} px"),
+            (Kind::Vector, Some([w, h])) => format!("vector artwork, {w} x {h}"),
+            (Kind::Vector, _) => "vector artwork".to_owned(),
+            _ => "image".to_owned(),
+        };
+        panel = panel.push(text(facts).size(12));
+        if let Some(file) = &asset.file {
+            panel = panel.push(text(file).size(12));
+        }
+
+        if let (Some(thumb), Some([w, h])) = (&self.thumbs[i], asset.size) {
+            let (w, h) = (w.max(1.0) as f32, h.max(1.0) as f32);
+            let room = Size::new(
+                (size.width - 2.0 * PADDING).max(1.0),
+                (size.height - 2.0 * PADDING).max(1.0),
+            );
+            let fit = (room.width / w).min(room.height / h);
+            let scale = if self.actual_size { 1.0 } else { fit };
+            let (drawn_w, drawn_h) = ((w * scale).round().max(1.0), (h * scale).round().max(1.0));
+
+            let size_button = |label: &'a str, actual: bool| {
+                let mut b = button(text(label).size(13)).on_press(Message::ActualSize(actual));
+                if self.actual_size == actual {
+                    b = b.style(button::secondary);
+                }
+                b
+            };
+            panel = panel.push(
+                container(
+                    row![
+                        size_button("Fit", false),
+                        size_button("100%", true),
+                        text(format!("{:.0}%", scale * 100.0)).size(13),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Center),
+                )
+                .padding([6, 0]),
+            );
+
+            let art: Element<'a, Message> = match thumb {
+                Thumb::Image(handle) => image(handle.clone())
+                    .width(drawn_w)
+                    .height(drawn_h)
+                    .content_fit(ContentFit::Fill)
+                    // Enlarged pixels stay square; reduced ones blend.
+                    .filter_method(if scale >= 1.0 {
+                        image::FilterMethod::Nearest
+                    } else {
+                        image::FilterMethod::Linear
+                    })
+                    .into(),
+                Thumb::Svg(handle) => svg(handle.clone())
+                    .width(drawn_w)
+                    .height(drawn_h)
+                    .content_fit(ContentFit::Fill)
+                    .into(),
+            };
+            let backdrop = session
+                .engine
+                .lock()
+                .expect("the engine is not poisoned")
+                .show()
+                .and_then(|show| cuelight_core::parse_color(&show.background))
+                .map(|[r, g, b, a]| iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.0))
+                .unwrap_or(iced::Color::BLACK);
+            let framed = container(art).style(move |_| container::Style {
+                background: Some(backdrop.into()),
+                ..container::Style::default()
+            });
+            panel = panel.push(if drawn_w > room.width {
+                Element::from(
+                    scrollable(container(framed).padding(iced::Padding {
+                        bottom: SCROLLBAR,
+                        ..iced::Padding::ZERO
+                    }))
+                    .direction(Direction::Horizontal(Scrollbar::default()))
+                    .width(Fill),
+                )
+            } else {
+                framed.into()
+            });
+        }
+
+        if let Some(structure) = &asset.structure {
+            panel = panel.push(container(text("ELEMENTS").size(12)).padding([6, 0]));
+            panel = panel.push(
+                text(format!(
+                    "{} path(s), {} inside no id",
+                    structure.paths, structure.loose
+                ))
+                .size(12),
+            );
+            if structure.elements.is_empty() {
+                panel = panel.push(
+                    text("No element carries an id: the artwork moves only as a whole.").size(13),
+                );
+            }
+            for element in &structure.elements {
+                let indent = element.depth as f32 * 14.0;
+                panel = panel.push(
+                    container(
+                        row![
+                            text(&element.id).size(13).width(Fill),
+                            text(format!("{} path(s)", element.paths)).size(12),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::Center),
+                    )
+                    .padding(iced::Padding::ZERO.left(indent)),
+                );
+                if !element.parts.is_empty() {
+                    panel = panel.push(
+                        container(text(format!("part in {}", element.parts.join(", "))).size(12))
+                            .padding(iced::Padding::ZERO.left(indent + 12.0)),
+                    );
+                }
+            }
+            if !structure.unknown.is_empty() {
+                panel =
+                    panel.push(container(text("PARTS IT DOES NOT HAVE").size(12)).padding([6, 0]));
+                for (id, place) in &structure.unknown {
+                    panel = panel.push(
+                        row![
+                            text(id).size(13).width(Fill),
+                            text(format!("named by {place}")).size(12)
+                        ]
+                        .spacing(6),
+                    );
+                }
+            }
+        }
+        panel
+    }
+}
+
 /// The picked asset's file and every place the show uses it.
 fn picked(asset: &Asset) -> Column<'_, Message> {
     let mut facts = Column::new().spacing(3);
@@ -1631,6 +1830,8 @@ mod tests {
             "2",
             "--pick",
             "10, 20",
+            "--asset",
+            "robot",
             "--silent",
             "--screenshot",
             "out.png",
@@ -1642,6 +1843,7 @@ mod tests {
                 show: Some("deck".into()),
                 zoom: Some(2.0),
                 pick: Some([10.0, 20.0]),
+                asset: Some("robot".to_owned()),
                 trigger: Vec::new(),
                 silent: true,
                 screenshot: Some("out.png".into()),
@@ -1793,6 +1995,39 @@ mod tests {
             let _ = app.update(message);
         }
         assert_eq!(app.tab, Tab::Layers);
+    }
+
+    #[test]
+    fn a_picked_image_is_previewed_until_a_layer_is_picked() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        let _ = app.update(Message::Reveal("dot".to_owned()));
+        assert_eq!((app.tab, app.selected), (Tab::Assets, Some(0)));
+        {
+            let mut ui = simulator(app.view());
+            assert!(ui.find("image, 8 x 8 px").is_ok(), "the inspector has it");
+        }
+        let _ = app.update(Message::ActualSize(true));
+        {
+            let mut ui = simulator(app.view());
+            assert!(ui.find("image, 8 x 8 px").is_ok());
+        }
+        // A layer picked on the stage takes the inspector back.
+        let _ = app.update(Message::Pick([32.0, 14.0], Pick::default()));
+        assert_eq!(app.selected, None);
+        {
+            let mut ui = simulator(app.view());
+            assert!(ui.find("image, 8 x 8 px").is_err());
+            assert!(ui.find("image, group/dot").is_ok());
+        }
+        // An asset the show does not have is said, not picked.
+        let _ = app.update(Message::Reveal("nothing".to_owned()));
+        assert_eq!(app.selected, None);
+        assert!(app.status.contains("no asset"), "{}", app.status);
     }
 
     #[test]

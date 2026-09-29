@@ -100,6 +100,15 @@ impl Log {
         self.lines.retain(|l| !matches!(l.kind, Kind::Audit(_)));
     }
 
+    /// What the audit says of one place: a file's path in the show, or a
+    /// path in the document.
+    pub fn audit_of<'a>(&'a self, place: &str) -> impl Iterator<Item = &'a Line> {
+        let prefix = format!("{place}: ");
+        self.lines
+            .iter()
+            .filter(move |l| matches!(l.kind, Kind::Audit(_)) && l.text.starts_with(&prefix))
+    }
+
     /// Drop what happened while the show played; what is said of the
     /// document stays. For a restart.
     pub fn clear_played(&mut self) {

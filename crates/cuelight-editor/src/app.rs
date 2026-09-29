@@ -4,20 +4,22 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use cuelight_core::{Influence, LayerKind, LayerPath, Property, TimelineOwner, Value};
+use cuelight_core::{Influence, Layer, LayerKind, LayerPath, Property, TimelineOwner, Value};
 use cuelight_editor_core::assets::{self, Asset, Kind};
+use cuelight_editor_core::document::{Document, Pointer};
 use cuelight_editor_core::inputs::{self, Inputs, Place};
 use cuelight_editor_core::session::Instant;
 use cuelight_editor_core::specimen::{self, Drawn, Sizing};
+use cuelight_editor_core::syntax::{self, Token};
 use cuelight_editor_core::tree::{self, Row};
 use iced::keyboard;
 use iced::widget::operation::{Animation, scroll_to, snap_to};
 use iced::widget::pane_grid::{self, Axis, Configuration};
 use iced::widget::scrollable::{AbsoluteOffset, Direction, RelativeOffset, Scrollbar};
-use iced::widget::text::Wrapping;
+use iced::widget::text::{Span, Wrapping};
 use iced::widget::{
-    Column, button, center, column, container, image, responsive, row, scrollable, shader, slider,
-    space, svg, text, text_input, toggler,
+    Column, button, center, column, container, image, responsive, rich_text, row, scrollable,
+    shader, slider, space, span, svg, text, text_input, toggler,
 };
 use iced::{ContentFit, Element, Fill, Font, Size, Subscription, Task, Theme};
 
@@ -140,6 +142,13 @@ pub struct App {
     /// for. A zoom step scales it, so the point under the middle of the
     /// view stays there.
     scrolled: Option<AbsoluteOffset>,
+    /// The show document as written, for the inspector to show a
+    /// layer's own text.
+    document: Option<Document>,
+    /// Whether the system asks for a light or a dark theme: iced draws
+    /// the window in the theme it picks for it, and the inspector's
+    /// colours are taken from the same one.
+    mode: iced::theme::Mode,
 }
 
 /// The stage's scroll pane, for the tasks that position it.
@@ -288,6 +297,8 @@ pub enum Message {
     ToggleLog,
     /// A split between two areas dragged.
     Resized(pane_grid::ResizeEvent),
+    /// The system's light or dark preference, found or changed.
+    Mode(iced::theme::Mode),
     /// The window's scale factor, found or changed.
     Rescaled(f32),
     /// The window as drawn, for `--screenshot`.
@@ -342,6 +353,8 @@ impl App {
             }),
             zoom: Zoom::Fit,
             scrolled: None,
+            document: None,
+            mode: iced::theme::Mode::None,
             scale_factor: 1.0,
             fitted: Cell::new(1.0),
             log_open: true,
@@ -369,7 +382,7 @@ impl App {
             if let Some(name) = options.asset {
                 then = then.chain(Task::done(Message::Reveal(name)));
             }
-            (app, open.chain(then))
+            (app, Task::batch([system_mode(), open.chain(then)]))
         }
         // A page asked to open a show (`?show=<url>`) fetches it.
         #[cfg(target_arch = "wasm32")]
@@ -378,7 +391,10 @@ impl App {
             app.asking = true;
             (
                 app,
-                Task::perform(dialog::fetch_show_from_query(), Message::Picked),
+                Task::batch([
+                    system_mode(),
+                    Task::perform(dialog::fetch_show_from_query(), Message::Picked),
+                ]),
             )
         }
     }
@@ -712,6 +728,10 @@ impl App {
                 self.expanded = property;
                 Task::none()
             }
+            Message::Mode(mode) => {
+                self.mode = mode;
+                Task::none()
+            }
             Message::Resized(pane_grid::ResizeEvent { split, ratio }) => {
                 self.panes.resize(split, ratio);
                 Task::none()
@@ -855,6 +875,7 @@ impl App {
                     .log
                     .extend(cuelight_editor_core::log::load(&self.summary.problems));
                 session.audit(&document.text());
+                self.document = Some(document);
                 self.session = Some(session);
                 // The window's scale factor bounds the zoom; ask once a
                 // window is there to ask.
@@ -1014,7 +1035,11 @@ impl App {
             iced::window::Event::Rescaled(factor) => Some(Message::Rescaled(factor)),
             _ => None,
         });
-        let mut subscriptions = vec![keys, rescaled];
+        let mut subscriptions = vec![
+            keys,
+            rescaled,
+            iced::system::theme_changes().map(Message::Mode),
+        ];
         #[cfg(not(target_arch = "wasm32"))]
         let waiting_to_shoot = self.session.is_some() && self.screenshot.is_some();
         #[cfg(target_arch = "wasm32")]
@@ -1611,10 +1636,72 @@ impl App {
         }
 
         panel = panel.push(container(text("JSON").size(12)).padding([6, 0]));
-        let json = serde_json::to_string_pretty(layer).unwrap_or_default();
-        panel = panel.push(text(json).size(12).font(iced::Font::new("DM Mono")));
+        let json = match self.written(show, path, layer) {
+            Some(written) => written,
+            None => {
+                // The document does not have the layer where the engine
+                // does: what the engine read, defaults and all.
+                panel = panel.push(text("as the engine read it").size(12));
+                serde_json::to_string_pretty(layer).unwrap_or_default()
+            }
+        };
+        panel = panel.push(json_text(&json, &theme(self)));
         panel
     }
+
+    /// The layer's text as the document has it, if the document has that
+    /// layer at the layer's place.
+    fn written(
+        &self,
+        show: &cuelight_core::Show,
+        path: &LayerPath,
+        layer: &Layer,
+    ) -> Option<String> {
+        let document = self.document.as_ref()?;
+        let pointer = Pointer::parse(&tree::pointer(show, path)?).ok()?;
+        let node = document.get(&pointer)?.value();
+        // A part is named by its id.
+        let named = node.get("name").or_else(|| node.get("id"))?;
+        (named.as_str() == Some(layer.name.as_str())).then(|| document.text_at(&pointer))?
+    }
+}
+
+/// JSON in the editor's mono font, coloured by token from the theme's
+/// palette: keys, strings, numbers, literals and punctuation each their
+/// own, whitespace and anything else in the text's colour.
+fn json_text<'a>(json: &str, theme: &Theme) -> Element<'a, Message> {
+    let palette = theme.palette();
+    let text_l = palette.background.base.text.into_oklch().l;
+    let back_l = palette.background.base.color.into_oklch().l;
+    // A colour at a lightness this far from the text's towards the
+    // background's, so it reads on the pane as text does, light on dark
+    // or dark on light, whichever the theme is.
+    let toward = |c: iced::Color, far: f32| {
+        let mut oklch = c.into_oklch();
+        oklch.l = text_l + (back_l - text_l) * far;
+        Some(iced::Color::from_oklch(oklch))
+    };
+    // The palette's hues are picked to fill buttons; as text they are
+    // lifted near the text's lightness. Dark text on light needs more
+    // room for its hue to show.
+    let near = if palette.is_dark { 0.25 } else { 0.4 };
+    let colour = |token: Token| match token {
+        Token::Key => toward(palette.primary.base.color, near),
+        Token::String => toward(palette.success.base.color, near),
+        Token::Number => toward(palette.warning.base.color, near),
+        Token::Literal => toward(palette.danger.base.color, near),
+        // The text's grey, halfway to the background: seen, not read.
+        Token::Punctuation => toward(palette.background.base.text, 0.5),
+        Token::Plain => None,
+    };
+    let spans: Vec<Span<'a, ()>> = syntax::tokens(json)
+        .into_iter()
+        .map(|(token, range)| span(json[range].to_owned()).color_maybe(colour(token)))
+        .collect();
+    rich_text(spans)
+        .size(12)
+        .font(iced::Font::new("DM Mono"))
+        .into()
 }
 
 /// What an influence hands the property, as text.
@@ -2335,9 +2422,16 @@ fn summary(summary: &Summary) -> Column<'_, Message> {
     rows
 }
 
-#[allow(dead_code)]
-pub fn theme(_: &App) -> Theme {
-    Theme::Dark
+/// The theme iced draws the window in: the one it picks for the
+/// system's preference (or `ICED_THEME`), as the colours of the view that
+/// are not a widget's own style follow it.
+pub fn theme(app: &App) -> Theme {
+    <Theme as iced::theme::Base>::default(app.mode)
+}
+
+/// Ask for the system's light or dark preference.
+fn system_mode() -> Task<Message> {
+    iced::system::theme().map(Message::Mode)
 }
 
 #[cfg(test)]
@@ -2594,6 +2688,35 @@ mod tests {
         assert!(ui.find("100%").is_ok());
         assert!(ui.find("800%").is_ok(), "3 pixels tall, zoomed to 24");
         assert!(ui.find("none of these characters").is_ok(), "no digits");
+    }
+
+    /// The JSON is the layer as the file has it: the author's own
+    /// layout, and nothing the engine fills in.
+    #[test]
+    fn the_json_is_the_layers_own_text() {
+        let (mut app, _) = App::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cuelight-editor-core/tests/fixtures/mini"
+        );
+        let _ = app.update(Message::Dropped(dir.into()));
+        let _ = app.update(Message::Pick([32.0, 14.0], Pick::default()));
+        let session = app.session.as_ref().unwrap();
+        let engine = session.engine.lock().unwrap();
+        let show = engine.show().unwrap();
+        let path = app.selection.last().unwrap();
+        let layer = tree::layer(show, path).unwrap();
+        let written = app.written(show, path, layer).unwrap();
+        assert!(
+            written.starts_with(r#"{ "name": "dot", "type": "image", "image": "dot""#),
+            "{written}"
+        );
+        assert!(
+            written.contains("\n  \"timelines\": ["),
+            "moved left: {written}"
+        );
+        assert!(written.ends_with("\n}"), "{written}");
+        assert!(!written.contains("\"visible\""), "no defaults: {written}");
     }
 
     #[test]

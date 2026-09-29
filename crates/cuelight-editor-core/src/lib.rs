@@ -10,4 +10,5 @@ pub mod log;
 pub mod opened;
 pub mod session;
 pub mod specimen;
+pub mod syntax;
 pub mod tree;

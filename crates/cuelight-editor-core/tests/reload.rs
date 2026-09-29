@@ -1,6 +1,9 @@
 //! An edited document reloads into the session and lands back at the
 //! playhead, inputs replayed.
 
+// Test code throughout, so clippy lets it panic as tests do.
+#![cfg(test)]
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 

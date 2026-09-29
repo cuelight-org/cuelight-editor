@@ -1,6 +1,9 @@
 //! A font's sample line and specimen come out of the engine's own text
 //! path: a bitmap font as its pixels, an outline font as its family.
 
+// Test code throughout, so clippy lets it panic as tests do.
+#![cfg(test)]
+
 use std::path::{Path, PathBuf};
 
 use cuelight_editor_core::opened::{self, Opened};

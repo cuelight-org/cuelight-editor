@@ -34,24 +34,29 @@ pub fn tokens(text: &str) -> Vec<(Token, Range<usize>)> {
         Some((last, prior)) if *last == token && prior.end == range.start => prior.end = range.end,
         _ => out.push((token, range)),
     };
+    let byte = |at: usize| bytes.get(at).copied();
     let mut at = 0;
-    while at < bytes.len() {
+    while let Some(first) = byte(at) {
         let start = at;
-        let token = match bytes[at] {
+        let token = match first {
             b'"' => {
                 at += 1;
-                while at < bytes.len() && bytes[at] != b'"' && bytes[at] != b'\n' {
-                    at += if bytes[at] == b'\\' { 2 } else { 1 };
+                while let Some(b) = byte(at)
+                    && b != b'"'
+                    && b != b'\n'
+                {
+                    at += if b == b'\\' { 2 } else { 1 };
                 }
-                if at < bytes.len() && bytes[at] == b'"' {
+                if byte(at) == Some(b'"') {
                     at += 1;
                 }
                 at = at.min(bytes.len());
-                let rest = &bytes[at..];
-                let after = rest
+                let after = bytes
+                    .get(at..)
+                    .unwrap_or_default()
                     .iter()
-                    .position(|b| !matches!(b, b' ' | b'\t' | b'\r'))
-                    .map(|i| rest[i]);
+                    .copied()
+                    .find(|b| !matches!(b, b' ' | b'\t' | b'\r'));
                 if after == Some(b':') {
                     Token::Key
                 } else {
@@ -64,25 +69,29 @@ pub fn tokens(text: &str) -> Vec<(Token, Range<usize>)> {
             }
             b'-' | b'0'..=b'9' => {
                 at += 1;
-                while at < bytes.len()
-                    && matches!(bytes[at], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
-                {
+                while matches!(
+                    byte(at),
+                    Some(b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+                ) {
                     at += 1;
                 }
                 Token::Number
             }
             b if b.is_ascii_alphabetic() => {
-                while at < bytes.len() && bytes[at].is_ascii_alphanumeric() {
+                while byte(at).is_some_and(|b| b.is_ascii_alphanumeric()) {
                     at += 1;
                 }
-                match &text[start..at] {
-                    "true" | "false" | "null" => Token::Literal,
+                match text.get(start..at) {
+                    Some("true" | "false" | "null") => Token::Literal,
                     _ => Token::Plain,
                 }
             }
             _ => {
                 // One character, whole, so a range never cuts one apart.
-                at += text[at..].chars().next().map_or(1, char::len_utf8);
+                at += text
+                    .get(at..)
+                    .and_then(|rest| rest.chars().next())
+                    .map_or(1, char::len_utf8);
                 Token::Plain
             }
         };

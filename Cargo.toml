@@ -10,6 +10,17 @@ license = "MIT"
 repository = "https://github.com/francisdb/cuelight-editor"
 publish = false
 
+[workspace.lints.clippy]
+# The editor must never take the user's work down: what can fail is a
+# value. Tests may still panic; clippy.toml allows it there.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+
 # Every pin in one place. The engine crates move together, and iced with
 # them when wgpu changes (see README).
 [workspace.dependencies]

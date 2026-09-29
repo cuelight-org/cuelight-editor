@@ -1,6 +1,7 @@
 //! Sound: the show's voices and a previewed one, handed to the sound
 //! device or the browser's audio.
 
+use cuelight_editor_core::session::lock;
 use iced::Task;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -86,7 +87,7 @@ impl App {
             && let Some(session) = &self.session
             && !session.paused
         {
-            let engine = session.engine.lock().expect("the engine is not poisoned");
+            let engine = lock(&session.engine);
             match engine.voices() {
                 Ok(heard) => voices = heard,
                 Err(error) => log::warn!("voices: {error}"),

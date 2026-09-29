@@ -1,6 +1,9 @@
 //! The log: what the audit, the load, the trace and the hand put in it,
 //! one line each, in columns.
 
+// Test code throughout, so clippy lets it panic as tests do.
+#![cfg(test)]
+
 use cuelight_core::{FindingKind, Value};
 use cuelight_editor_core::log::{self, Kind, Line, Log};
 use cuelight_editor_core::session::{Instant, Session};

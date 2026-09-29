@@ -11,7 +11,7 @@ use iced::widget::{Column, button, column, container, image, row, scrollable, sp
 use iced::{ContentFit, Element, Fill, Font, Size, Task};
 
 use super::{App, Face, Faces, Message, Thumb};
-use cuelight_editor_core::session::Session;
+use cuelight_editor_core::session::{Session, lock};
 
 impl App {
     /// The assets by kind, each with its thumbnail, its format and how
@@ -29,7 +29,7 @@ impl App {
                 heading = Some(asset.kind.heading());
                 panel = panel.push(text(asset.kind.heading()).size(12));
             }
-            let thumb: Element<'a, Message> = match &self.thumbs[i] {
+            let thumb: Element<'a, Message> = match self.thumbs.get(i).and_then(Option::as_ref) {
                 Some(Thumb::Image(handle)) => image(handle.clone())
                     .width(THUMB)
                     .height(THUMB)
@@ -54,7 +54,7 @@ impl App {
                 facts.push_str(", playing");
             }
             let mut about = column![text(&asset.name).size(14), text(facts).size(12)].spacing(2);
-            if let Some(faces) = &self.faces[i] {
+            if let Some(Some(faces)) = self.faces.get(i) {
                 // The sample at the size the show uses the font at, as
                 // tall as a row allows; what does not fit is cut off.
                 about = about.push(
@@ -97,7 +97,9 @@ impl App {
         /// What a scrollbar covers, as on the stage: room past the
         /// artwork's bottom edge while it scrolls sideways.
         const SCROLLBAR: f32 = 10.0;
-        let asset = &self.library[i];
+        let Some(asset) = self.library.get(i) else {
+            return Column::new();
+        };
         let mut panel = Column::new().spacing(4).padding(PADDING);
         panel = panel.push(text(&asset.name).size(16));
         let facts = match (asset.kind, asset.size) {
@@ -108,7 +110,7 @@ impl App {
         };
         panel = panel.push(text(facts).size(12));
 
-        if let (Some(thumb), Some([w, h])) = (&self.thumbs[i], asset.size) {
+        if let (Some(Some(thumb)), Some([w, h])) = (self.thumbs.get(i), asset.size) {
             let (w, h) = (w.max(1.0) as f32, h.max(1.0) as f32);
             let room = Size::new(
                 (size.width - 2.0 * PADDING).max(1.0),
@@ -156,10 +158,7 @@ impl App {
                     .content_fit(ContentFit::Fill)
                     .into(),
             };
-            let backdrop = session
-                .engine
-                .lock()
-                .expect("the engine is not poisoned")
+            let backdrop = lock(&session.engine)
                 .show()
                 .and_then(|show| cuelight_core::parse_color(&show.background))
                 .map(|[r, g, b, a]| iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.0))
@@ -197,13 +196,15 @@ impl App {
         i: usize,
         size: Size,
     ) -> Column<'a, Message> {
-        let asset = &self.library[i];
-        let mut panel = if let Some(faces) = &self.faces[i] {
+        let Some(asset) = self.library.get(i) else {
+            return Column::new();
+        };
+        let mut panel = if let Some(Some(faces)) = self.faces.get(i) {
             self.specimen_panel(session, asset, faces)
         } else if matches!(asset.kind, Kind::Image | Kind::Vector) {
             self.preview(session, i, size)
         } else {
-            let engine = session.engine.lock().expect("the engine is not poisoned");
+            let engine = lock(&session.engine);
             let facts = match asset.kind {
                 Kind::Sound => engine
                     .sound_duration(&asset.name)
@@ -321,10 +322,10 @@ impl App {
         asset: &'a Asset,
         faces: &'a Faces,
     ) -> Column<'a, Message> {
-        let engine = session.engine.lock().expect("the engine is not poisoned");
+        let engine = lock(&session.engine);
         let mut panel = Column::new().spacing(4).padding(12);
         panel = panel.push(text(&asset.name).size(16));
-        let kind = match faces.sizings[0].size {
+        let kind = match faces.sizings.first().and_then(|sizing| sizing.size) {
             None => "bitmap font",
             Some(_) => "outline font",
         };
@@ -496,7 +497,10 @@ pub(super) fn faces(
                 },
                 _ => Face::Nothing,
             };
-            let sample = face(look.sample, &look.sizings[0]);
+            let sample = look
+                .sizings
+                .first()
+                .map_or(Face::Nothing, |sizing| face(look.sample, sizing));
             let specimens = look
                 .specimens
                 .into_iter()
@@ -538,7 +542,7 @@ fn font(family: &specimen::Family) -> Font {
     ];
     let step = (usize::from(family.weight.clamp(100, 900)) + 50) / 100 - 1;
     Font::with_family(family.name.as_str())
-        .weight(WEIGHTS[step])
+        .weight(WEIGHTS.get(step).copied().unwrap_or(Weight::Normal))
         .style(if family.italic {
             Style::Italic
         } else {

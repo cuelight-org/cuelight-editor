@@ -8,7 +8,7 @@ use cuelight_core::{LayerPath, Property};
 use cuelight_editor_core::assets::Asset;
 use cuelight_editor_core::document::Document;
 use cuelight_editor_core::inputs::{self, Inputs};
-use cuelight_editor_core::session::Instant;
+use cuelight_editor_core::session::{Instant, lock};
 use cuelight_editor_core::specimen::Sizing;
 use cuelight_editor_core::tree::{self, Row};
 use iced::keyboard;
@@ -698,7 +698,7 @@ impl App {
                     _ => {
                         let duration = self.library.get(index).and_then(|asset| {
                             let session = self.session.as_ref()?;
-                            let engine = session.engine.lock().expect("the engine is not poisoned");
+                            let engine = lock(&session.engine);
                             Some((asset.name.clone(), engine.sound_duration(&asset.name)?))
                         });
                         self.preview = duration.map(|(sound, duration)| Preview {
@@ -716,11 +716,7 @@ impl App {
                 let Some(session) = &self.session else {
                     return Task::none();
                 };
-                let under = session
-                    .engine
-                    .lock()
-                    .expect("the engine is not poisoned")
-                    .layers_at(point);
+                let under = lock(&session.engine).layers_at(point);
                 self.pick(under, pick);
                 // A layer picked is what the inspector shows now.
                 self.selected = None;

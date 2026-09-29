@@ -14,15 +14,19 @@ fn fixture() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mini"))
 }
 
-/// The examples checkout, beside this repository or where
-/// `CUELIGHT_EXAMPLES` says.
-fn examples() -> Option<PathBuf> {
+/// The examples checkout's deck, beside this repository or where
+/// `CUELIGHT_EXAMPLES` says: under `demos/`, or at the top of an older
+/// checkout.
+fn deck() -> Option<PathBuf> {
     let dir = std::env::var_os("CUELIGHT_EXAMPLES")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../cuelight-examples")
         });
-    dir.join("deck/show.json").is_file().then_some(dir)
+    ["demos/deck", "deck"]
+        .into_iter()
+        .map(|at| dir.join(at))
+        .find(|deck| deck.join("show.json").is_file())
 }
 
 fn value_of(session: &Session, layer: &str, property: Property) -> Option<f64> {
@@ -83,11 +87,11 @@ fn an_edit_reloads_at_the_playhead_with_the_inputs_replayed() {
 
 #[test]
 fn a_reload_of_the_deck_returns_to_the_playhead_within_a_frame() {
-    let Some(examples) = examples() else {
+    let Some(deck) = deck() else {
         eprintln!("no cuelight-examples checkout: the deck budget is not measured");
         return;
     };
-    let opened = Opened::from_path(&examples.join("deck")).unwrap();
+    let opened = Opened::from_path(&deck).unwrap();
     let document = opened.document;
     let mut session = Session::new(opened.engine, opened.driver);
     let now = Instant::now();

@@ -207,7 +207,7 @@ enum Face {
 }
 
 /// A sound played once from the library: which asset it is, and since
-/// when. Nothing is recorded and the show does not wake for it.
+/// when. Nothing is recorded and the show stays as it is.
 #[derive(Debug, Clone)]
 struct Preview {
     index: usize,
@@ -525,7 +525,6 @@ impl App {
                     && self.inputs.keys.contains_key(name.as_str())
                 {
                     session.key(&name);
-                    self.wake();
                     return Task::none();
                 }
                 match name.as_str() {
@@ -553,14 +552,12 @@ impl App {
             Message::Press(at) => {
                 if let Some(session) = &mut self.session {
                     session.press(at);
-                    self.wake();
                 }
                 Task::none()
             }
             Message::Fire(trigger) => {
                 if let Some(session) = &mut self.session {
                     session.fire(&trigger);
-                    self.wake();
                 }
                 Task::none()
             }
@@ -572,7 +569,6 @@ impl App {
                 self.edits.remove(&name);
                 if let Some(session) = &mut self.session {
                     session.set(&name, inputs::parse_value(&text));
-                    self.wake();
                 }
                 Task::none()
             }
@@ -736,16 +732,6 @@ impl App {
                 self.panes.resize(split, ratio);
                 Task::none()
             }
-        }
-    }
-
-    /// An input given by hand is a request to see the show react, so it
-    /// plays a paused show; what it started then runs.
-    fn wake(&mut self) {
-        if let Some(session) = &mut self.session
-            && session.paused
-        {
-            session.toggle_pause(Instant::now());
         }
     }
 
@@ -2904,17 +2890,20 @@ mod tests {
             keyboard::Modifiers::empty(),
         ));
         let session = app.session.as_ref().unwrap();
-        assert!(!session.paused, "an input by hand plays the paused show");
+        assert!(
+            session.paused,
+            "an input by hand leaves a paused show paused"
+        );
         assert!(
             matches!(session.happened.back().map(|h| &h.what), Some(What::Fired(t)) if t == "go")
         );
 
-        // With Ctrl, the editor's own Space pauses.
+        // With Ctrl, the editor's own Space plays.
         let _ = app.update(Message::KeyPressed(
             keyboard::Key::Named(keyboard::key::Named::Space),
             keyboard::Modifiers::CTRL,
         ));
-        assert!(app.session.as_ref().unwrap().paused);
+        assert!(!app.session.as_ref().unwrap().paused);
 
         // A press on the dot fires `go`; one on the floor fires nothing.
         let _ = app.update(Message::Press([32.0, 14.0]));

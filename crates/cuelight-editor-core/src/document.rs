@@ -286,6 +286,16 @@ impl Document {
         self.root.get(&path.0)
     }
 
+    /// The text of the node at `path` as the file has it, its lines after
+    /// the first moved left by the indent they share, so it reads as if
+    /// it stood alone: what the author wrote, and nothing the engine
+    /// fills in.
+    pub fn text_at(&self, path: &Pointer) -> Option<String> {
+        let mut raw = String::new();
+        self.get(path)?.write(&mut raw);
+        Some(dedent(&raw))
+    }
+
     /// Replace what is at `path` with `value`. Inside an open step, a
     /// path the step already set folds into that edit.
     pub fn set(&mut self, path: &Pointer, value: Value) -> Result<(), EditError> {
@@ -787,6 +797,29 @@ impl Item {
     }
 }
 
+/// `text` with the indent its lines after the first share taken off
+/// them; the first line starts where the node did, so it has none.
+fn dedent(text: &str) -> String {
+    let indent = |line: &str| line.len() - line.trim_start_matches([' ', '\t']).len();
+    let shared = text
+        .lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .map(indent)
+        .min()
+        .unwrap_or(0);
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+            out.push_str(&line[indent(line).min(shared)..]);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 /// A JSON reader that keeps what it reads.
 struct Parser<'a> {
     text: &'a str,
@@ -1188,5 +1221,47 @@ mod tests {
         assert_eq!(doc.text(), edited);
         while doc.undo() {}
         assert_eq!(doc.text(), original);
+    }
+
+    /// A node's text is what the file says, `1.0` and all, moved left so
+    /// its closing bracket lines up with where it began.
+    #[test]
+    fn a_node_is_read_back_as_written_and_moved_left() {
+        let doc = Document::parse(SHOW).unwrap();
+        let at = |p: &str| doc.text_at(&Pointer::parse(p).unwrap());
+        assert_eq!(
+            at("/layers/0").as_deref(),
+            Some(r#"{"name": "a", "type": "shape", "x": 1.0, "y": 2}"#)
+        );
+        assert_eq!(at("/layers/0/y").as_deref(), Some("2"));
+        assert_eq!(at("/layers/7"), None);
+        let nested = Document::parse(
+            r#"{
+  "layers": [
+    {
+      "name": "g",
+
+      "children": [
+        {"name": "c"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            nested
+                .text_at(&Pointer::parse("/layers/0").unwrap())
+                .as_deref(),
+            Some(
+                r#"{
+  "name": "g",
+
+  "children": [
+    {"name": "c"}
+  ]
+}"#
+            )
+        );
     }
 }

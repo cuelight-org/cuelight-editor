@@ -1,6 +1,6 @@
 # cuelight-editor
 
-An editor for [cuelight](https://github.com/francisdb/cuelight) shows:
+An editor for [cuelight](https://github.com/cuelight-org/cuelight) shows:
 one Rust program, built with [iced](https://github.com/iced-rs/iced),
 that runs on the desktop and in the browser.
 
@@ -35,7 +35,7 @@ own driver off, so nothing happens until you make it.
 ### In the browser
 
 The same program compiled to `wasm32` is published from `main` at
-https://francisdb.github.io/cuelight-editor/, and built locally with
+https://cuelight-org.github.io/cuelight-editor/, and built locally with
 [trunk](https://trunkrs.dev):
 
 ```sh
@@ -93,8 +93,8 @@ wgpu moves, all three move together in one change.
 To build against a local checkout of the engine:
 
 ```sh
-cargo build --config 'patch."https://github.com/francisdb/cuelight".cuelight.path="../cuelight/crates/cuelight"' \
-            --config 'patch."https://github.com/francisdb/cuelight".cuelight-loader.path="../cuelight/crates/cuelight-loader"'
+cargo build --config 'patch."https://github.com/cuelight-org/cuelight".cuelight.path="../cuelight/crates/cuelight"' \
+            --config 'patch."https://github.com/cuelight-org/cuelight".cuelight-loader.path="../cuelight/crates/cuelight-loader"'
 ```
 
 CI builds and tests the desktop and builds the web page on every

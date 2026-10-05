@@ -14,7 +14,7 @@ jobs:
     name: native (fmt, clippy, test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get -qq update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libasound2-dev
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: cuelight-org/cuelight-examples
           path: cuelight-examples
@@ -41,7 +41,7 @@ jobs:
     name: web (wasm32 build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

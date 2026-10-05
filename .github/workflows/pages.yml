@@ -30,7 +30,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - uses: jetli/trunk-action@v0.5.0
+      - uses: jetli/trunk-action@v0.5.1
         with:
           version: latest
       # The site lives under the repository's name, so every asset path

@@ -11,16 +11,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Point every engine crate at main; the pinned revs in Cargo.toml stay.
-  CARGO_PATCH: >-
-    --config patch."https://github.com/cuelight-org/cuelight".cuelight.git="https://github.com/cuelight-org/cuelight"
-    --config patch."https://github.com/cuelight-org/cuelight".cuelight.branch="main"
-    --config patch."https://github.com/cuelight-org/cuelight".cuelight-core.git="https://github.com/cuelight-org/cuelight"
-    --config patch."https://github.com/cuelight-org/cuelight".cuelight-core.branch="main"
-    --config patch."https://github.com/cuelight-org/cuelight".cuelight-loader.git="https://github.com/cuelight-org/cuelight"
-    --config patch."https://github.com/cuelight-org/cuelight".cuelight-loader.branch="main"
-    --config patch."https://github.com/cuelight-org/cuelight".cuelight-audio.git="https://github.com/cuelight-org/cuelight"
-    --config patch."https://github.com/cuelight-org/cuelight".cuelight-audio.branch="main"
 
 jobs:
   native:
@@ -32,4 +22,8 @@ jobs:
         run: |
           sudo apt-get -qq update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libasound2-dev
-      - run: cargo test --workspace $CARGO_PATCH
+      # Cargo refuses a [patch] to the same git URL, so the pinned revs
+      # are rewritten to main in this checkout only.
+      - name: Point the engine crates at main
+        run: sed -i -E '/cuelight-org\/cuelight"/ s/rev = "[0-9a-f]+"/branch = "main"/' Cargo.toml
+      - run: cargo test --workspace

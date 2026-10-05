@@ -59,7 +59,7 @@ jobs:
           size=$(stat -c %s "$wasm")
           echo "$wasm: $size bytes"
           test "$size" -lt 12582912
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web
           path: dist

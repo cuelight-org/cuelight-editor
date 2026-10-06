@@ -178,6 +178,8 @@ pub struct App {
     /// The base value of each editable property of the picked layer, as
     /// its field shows it. Kept here because a field borrows it.
     bases: Vec<(Property, String)>,
+    /// A number being dragged by its label.
+    scrub: Option<editing::Scrub>,
     /// Whether the system asks for a light or a dark theme: iced draws
     /// the window in the theme it picks for it, and the inspector's
     /// colours are taken from the same one.
@@ -280,6 +282,14 @@ pub enum Message {
     KeepOwned,
     Undo,
     Redo,
+    /// The mouse went down on a property's label: a drag changes the
+    /// number, a click unfolds where it comes from.
+    ScrubStart(Property),
+    /// The cursor's x while a label is held.
+    ScrubMove(f32),
+    /// A frame while dragging: the number follows the cursor.
+    ScrubApply,
+    ScrubEnd,
     /// Files of the show's folder changed on disk, by the editor or not.
     #[cfg(not(target_arch = "wasm32"))]
     DiskChanged(Vec<std::path::PathBuf>),
@@ -414,6 +424,7 @@ impl App {
             typed: None,
             owned: None,
             bases: Vec::new(),
+            scrub: None,
             mode: iced::theme::Mode::None,
             scale_factor: 1.0,
             fitted: Cell::new(1.0),
@@ -530,6 +541,10 @@ impl App {
                 self.owned = None;
                 Task::none()
             }
+            Message::ScrubStart(property) => self.scrub_start(property),
+            Message::ScrubMove(x) => self.scrub_move(x),
+            Message::ScrubApply => self.scrub_apply(),
+            Message::ScrubEnd => self.scrub_end(),
             Message::Undo => self.undo(false),
             Message::Redo => self.undo(true),
             #[cfg(not(target_arch = "wasm32"))]
@@ -843,7 +858,9 @@ impl App {
     /// Load `text`, the document as it stands, into the playing session
     /// at the playhead, and bring what the window shows of the show up to
     /// date. Text that does not load leaves the show as it was.
-    fn reload_text(&mut self, text: &str) -> Result<(), String> {
+    /// The audit can take longer than a frame: a drag leaves it out
+    /// until it ends.
+    fn reload_text(&mut self, text: &str, audit: bool) -> Result<(), String> {
         let Some(session) = &mut self.session else {
             return Ok(());
         };
@@ -854,7 +871,9 @@ impl App {
         session
             .log
             .extend(cuelight_editor_core::log::load(&findings));
-        session.audit(text);
+        if audit {
+            session.audit(text);
+        }
         let engine = lock(&session.engine);
         if let Some(show) = engine.show() {
             self.rows = tree::rows(show);
@@ -936,6 +955,7 @@ impl App {
                 self.expanded = None;
                 self.typed = None;
                 self.owned = None;
+                self.scrub = None;
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
                 self.edits.clear();
                 let task = self.listen(&sounds, sound_files);
@@ -1003,6 +1023,24 @@ impl App {
                 _ => None,
             },
         ));
+        // A label held: the mouse anywhere moves its number, until it
+        // comes up.
+        if self.scrub.as_ref().is_some_and(|s| s.dragging) {
+            subscriptions.push(iced::window::frames().map(|_| Message::ScrubApply));
+        }
+        if self.scrub.is_some() {
+            subscriptions.push(iced::event::listen_with(
+                |event, _status, _window| match event {
+                    iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                        Some(Message::ScrubMove(position.x))
+                    }
+                    iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                        iced::mouse::Button::Left,
+                    )) => Some(Message::ScrubEnd),
+                    _ => None,
+                },
+            ));
+        }
         // The open show's files on disk, for changes made outside.
         #[cfg(not(target_arch = "wasm32"))]
         if let Some((at, under)) = self.origin.as_ref().and_then(watch::watched) {

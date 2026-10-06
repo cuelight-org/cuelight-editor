@@ -8,7 +8,9 @@ use cuelight_editor_core::inputs;
 use cuelight_editor_core::syntax::{self, Token};
 use cuelight_editor_core::tree;
 use iced::widget::text::Span;
-use iced::widget::{Column, button, column, container, rich_text, row, span, text, text_input};
+use iced::widget::{
+    Column, button, column, container, mouse_area, rich_text, row, span, text, text_input,
+};
 use iced::{Element, Fill, Size, Theme};
 
 use super::{App, Message, Tab, theme};
@@ -136,15 +138,34 @@ impl App {
                 }
             }
             let unfolded = self.expanded == Some(property);
-            let name = button(text(tree::property_name(property)).size(13))
-                .on_press(Message::Expand((!unfolded).then_some(property)))
-                .width(86)
-                .padding([2, 6])
-                .style(if unfolded {
-                    button::secondary
-                } else {
-                    button::text
-                });
+            // A number's label drags its value; a click on any label
+            // unfolds where the value comes from.
+            let name: Element<'a, Message> = if edit::input(property) == Some(edit::Input::Number) {
+                mouse_area(
+                    container(text(tree::property_name(property)).size(13))
+                        .width(86)
+                        .padding([2, 6])
+                        .style(if unfolded {
+                            container::rounded_box
+                        } else {
+                            container::transparent
+                        }),
+                )
+                .on_press(Message::ScrubStart(property))
+                .interaction(iced::mouse::Interaction::ResizingHorizontally)
+                .into()
+            } else {
+                button(text(tree::property_name(property)).size(13))
+                    .on_press(Message::Expand((!unfolded).then_some(property)))
+                    .width(86)
+                    .padding([2, 6])
+                    .style(if unfolded {
+                        button::secondary
+                    } else {
+                        button::text
+                    })
+                    .into()
+            };
             // An editable property shows its base, which an edit changes;
             // what wins now, if something else does, goes by the badge.
             let base = sources.iter().find_map(|source| match source {

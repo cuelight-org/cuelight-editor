@@ -333,6 +333,73 @@ fn a_property_a_binding_owns_asks_before_its_base_changes() {
 }
 
 #[test]
+fn dragging_a_label_moves_the_number_in_one_undo_step() {
+    let (mut app, _dir) = open_copy();
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    let _ = app.update(Message::Choose(group.clone()));
+    let _ = app.update(Message::ScrubStart(Property::X));
+    // Moves faster than frames fold into one: the value follows on the
+    // next frame, from where the cursor is then.
+    for x in [100.0, 101.0, 120.0, 110.0] {
+        let _ = app.update(Message::ScrubMove(x));
+    }
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(32.0)));
+    let _ = app.update(Message::ScrubApply);
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(42.0)));
+    let _ = app.update(Message::ScrubEnd);
+    assert_eq!(app.document.as_ref().unwrap().value()["layers"][1]["x"], 42);
+    assert_eq!(app.expanded, None, "a drag does not unfold the row");
+
+    let _ = app.update(Message::Undo);
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(32.0)));
+    assert!(
+        !app.document.as_ref().unwrap().is_dirty(),
+        "the whole drag undone"
+    );
+}
+
+#[test]
+fn a_fraction_drags_by_hundredths() {
+    let (mut app, _dir) = open_copy();
+    let floor = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(floor.clone()));
+    let _ = app.update(Message::ScrubStart(Property::Opacity));
+    let _ = app.update(Message::ScrubMove(200.0));
+    let _ = app.update(Message::ScrubMove(170.0));
+    let _ = app.update(Message::ScrubEnd);
+    assert_eq!(
+        app.document.as_ref().unwrap().value()["layers"][0]["opacity"],
+        0.7
+    );
+}
+
+#[test]
+fn a_click_on_a_label_unfolds_its_sources() {
+    let (mut app, _dir) = open_copy();
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    let _ = app.update(Message::Choose(group));
+    let _ = app.update(Message::ScrubStart(Property::Y));
+    let _ = app.update(Message::ScrubMove(100.0));
+    let _ = app.update(Message::ScrubMove(101.0));
+    let _ = app.update(Message::ScrubEnd);
+    assert_eq!(app.expanded, Some(Property::Y));
+    assert!(!app.document.as_ref().unwrap().is_dirty());
+}
+
+#[test]
+fn a_number_a_binding_owns_is_not_dragged() {
+    let (mut app, _dir) = open_copy();
+    let dot = LayerPath::new(cuelight_core::Root::Show, [1, 0]);
+    let _ = app.update(Message::Choose(dot));
+    let _ = app.update(Message::ScrubStart(Property::Opacity));
+    let _ = app.update(Message::ScrubMove(100.0));
+    let _ = app.update(Message::ScrubMove(140.0));
+    let _ = app.update(Message::ScrubEnd);
+    assert!(app.status.contains("a binding on lit"), "{}", app.status);
+    assert!(!app.document.as_ref().unwrap().is_dirty());
+}
+
+#[test]
 fn the_stage_zooms_and_fits_again() {
     let (mut app, _) = App::new();
     let dir = concat!(

@@ -85,7 +85,7 @@ impl App {
         let document = Document::parse(&text).map_err(|e| {
             format!("show.json on disk does not read ({e}); still showing the last version")
         })?;
-        self.reload_text(&text)?;
+        self.reload_text(&text, true)?;
         self.document = Some(document);
         self.files = change.files;
         Ok(())

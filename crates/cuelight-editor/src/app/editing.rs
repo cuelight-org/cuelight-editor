@@ -99,19 +99,7 @@ impl App {
                 return Task::none();
             }
         };
-        let owner = self.session.as_ref().and_then(|session| {
-            let engine = lock(&session.engine);
-            match engine.explain(&path, property).first() {
-                Some(Influence::Timeline { timeline, .. }) => {
-                    Some(format!("timeline {}", timeline.name))
-                }
-                Some(Influence::Binding { variable, .. }) => {
-                    Some(format!("a binding on {variable}"))
-                }
-                _ => None,
-            }
-        });
-        if let Some(owner) = owner {
+        if let Some(owner) = self.owner(&path, property) {
             self.owned = Some(Owned {
                 path,
                 property,
@@ -122,6 +110,20 @@ impl App {
         }
         self.edit_base(&path, property, value);
         Task::none()
+    }
+
+    /// What owns `property` of the layer at `path` at the playhead, in
+    /// words, when it is not the base.
+    pub(super) fn owner(&self, path: &LayerPath, property: Property) -> Option<String> {
+        let session = self.session.as_ref()?;
+        let engine = lock(&session.engine);
+        match engine.explain(path, property).first() {
+            Some(Influence::Timeline { timeline, .. }) => {
+                Some(format!("timeline {}", timeline.name))
+            }
+            Some(Influence::Binding { variable, .. }) => Some(format!("a binding on {variable}")),
+            _ => None,
+        }
     }
 
     /// Set the base value anyway, after the question.
@@ -142,6 +144,17 @@ impl App {
     /// and reload at the playhead; a show that no longer loads takes the
     /// edit back.
     fn edit_base(&mut self, path: &LayerPath, property: Property, value: serde_json::Value) {
+        self.write_base(path, property, value, true);
+    }
+
+    /// `edit_base`, with or without auditing the document after it.
+    fn write_base(
+        &mut self,
+        path: &LayerPath,
+        property: Property,
+        value: serde_json::Value,
+        audit: bool,
+    ) {
         let Some(at) = self.layer_pointer(path) else {
             self.status = "the document does not have this layer where the show does".to_owned();
             return;
@@ -154,7 +167,7 @@ impl App {
             return;
         }
         let text = document.text();
-        match self.reload_text(&text) {
+        match self.reload_text(&text, audit) {
             Ok(()) => {
                 if let Some((_, fields)) = &mut self.typed {
                     fields.retain(|(p, _)| *p != property);
@@ -186,7 +199,7 @@ impl App {
         }
         let text = document.text();
         self.typed = None;
-        self.status = match self.reload_text(&text) {
+        self.status = match self.reload_text(&text, true) {
             Ok(()) => (if redo { "redone" } else { "undone" }).to_owned(),
             Err(error) => error,
         };
@@ -204,5 +217,155 @@ impl App {
         let node = self.document.as_ref()?.get(&pointer)?.value();
         let named = node.get("name").or_else(|| node.get("id"))?;
         (named.as_str() == Some(layer.name.as_str())).then_some(pointer)
+    }
+}
+
+/// A number being dragged by its label: where the drag started, and the
+/// value it started from.
+#[derive(Debug, Clone)]
+pub(super) struct Scrub {
+    pub path: LayerPath,
+    pub property: Property,
+    pub from: f64,
+    /// The cursor's x when the drag began; the first move tells it.
+    pub start: Option<f32>,
+    /// The cursor has gone far enough for this to be a drag, not a click.
+    pub dragging: bool,
+    /// Where the cursor is now; applied once a frame, so moves that come
+    /// faster than the show reloads fold into one.
+    pub at: f32,
+    /// The value the drag last wrote.
+    pub applied: Option<serde_json::Value>,
+}
+
+/// How far a drag must go before it is one, in logical pixels.
+const SLOP: f32 = 3.0;
+
+/// How much one pixel of drag changes a property: a pixel for places,
+/// degrees and frames, a hundredth for what runs from 0 to 1.
+fn step(property: Property) -> f64 {
+    match property {
+        Property::Opacity
+        | Property::Scale
+        | Property::ScaleX
+        | Property::ScaleY
+        | Property::Reveal
+        | Property::Gain => 0.01,
+        _ => 1.0,
+    }
+}
+
+impl App {
+    /// The mouse went down on a property's label.
+    pub(super) fn scrub_start(&mut self, property: Property) -> Task<Message> {
+        let Some(path) = self.selection.last().cloned() else {
+            return Task::none();
+        };
+        let from = self
+            .bases
+            .iter()
+            .find(|(p, _)| *p == property)
+            .and_then(|(_, base)| base.parse::<f64>().ok());
+        self.scrub = Some(Scrub {
+            path,
+            property,
+            from: from.unwrap_or_default(),
+            start: None,
+            dragging: false,
+            at: 0.0,
+            applied: None,
+        });
+        Task::none()
+    }
+
+    /// The mouse moved while a label is held: note where it is, and once
+    /// it has gone past the slop, start the drag's undo step. The value
+    /// follows on the next frame.
+    pub(super) fn scrub_move(&mut self, x: f32) -> Task<Message> {
+        let Some(scrub) = &mut self.scrub else {
+            return Task::none();
+        };
+        let start = *scrub.start.get_or_insert(x);
+        scrub.at = x;
+        if scrub.dragging || (x - start).abs() < SLOP {
+            return Task::none();
+        }
+        let (path, property) = (scrub.path.clone(), scrub.property);
+        if edit::input(property) != Some(edit::Input::Number) {
+            self.scrub = None;
+            return Task::none();
+        }
+        if let Some(owner) = self.owner(&path, property) {
+            self.status = format!(
+                "{} is set by {owner} at the playhead: type a value to change its base",
+                tree::property_name(property)
+            );
+            self.scrub = None;
+            return Task::none();
+        }
+        if let Some(scrub) = &mut self.scrub {
+            scrub.dragging = true;
+        }
+        if let Some(document) = &mut self.document {
+            document.begin_step();
+        }
+        Task::none()
+    }
+
+    /// A frame while dragging: write the value the cursor is at, if it
+    /// is not the one written last. The audit waits for the drag to end.
+    pub(super) fn scrub_apply(&mut self) -> Task<Message> {
+        let Some(Scrub {
+            path,
+            property,
+            from,
+            start: Some(start),
+            dragging: true,
+            at,
+            applied,
+        }) = self.scrub.clone()
+        else {
+            return Task::none();
+        };
+        let step = step(property);
+        let raw = from + f64::from(at - start) * step;
+        // Whole steps, so a drag writes 0.43 and not 0.4300000000001.
+        let value = (raw / step).round() * step;
+        let value = if step < 1.0 {
+            serde_json::Value::from((value * 100.0).round() / 100.0)
+        } else {
+            serde_json::Value::from(value as i64)
+        };
+        if applied.as_ref() == Some(&value) {
+            return Task::none();
+        }
+        self.write_base(&path, property, value.clone(), false);
+        if let Some(scrub) = &mut self.scrub {
+            scrub.applied = Some(value);
+        }
+        Task::none()
+    }
+
+    /// The mouse came up: a drag ends its step, a click unfolds the row.
+    pub(super) fn scrub_end(&mut self) -> Task<Message> {
+        let Some(scrub) = self.scrub.take() else {
+            return Task::none();
+        };
+        if scrub.dragging {
+            // Where the mouse came up is where it ends, then the audit
+            // the drag left out.
+            self.scrub = Some(scrub);
+            let _ = self.scrub_apply();
+            self.scrub = None;
+            if let Some(document) = &mut self.document {
+                document.end_step();
+            }
+            if let (Some(session), Some(document)) = (&mut self.session, &self.document) {
+                session.audit(&document.text());
+            }
+        } else {
+            self.expanded = (self.expanded != Some(scrub.property)).then_some(scrub.property);
+        }
+        Task::none()
     }
 }

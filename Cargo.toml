@@ -24,10 +24,10 @@ indexing_slicing = "deny"
 # Every pin in one place. The engine crates move together, and iced with
 # them when wgpu changes (see README).
 [workspace.dependencies]
-cuelight = { git = "https://github.com/cuelight-org/cuelight", rev = "a7d3d56bfea11875becf912bcc24e09e578af59a" }
-cuelight-core = { git = "https://github.com/cuelight-org/cuelight", rev = "a7d3d56bfea11875becf912bcc24e09e578af59a" }
-cuelight-loader = { git = "https://github.com/cuelight-org/cuelight", rev = "a7d3d56bfea11875becf912bcc24e09e578af59a" }
-cuelight-audio = { git = "https://github.com/cuelight-org/cuelight", rev = "a7d3d56bfea11875becf912bcc24e09e578af59a", default-features = false }
+cuelight = { git = "https://github.com/cuelight-org/cuelight", rev = "3a5c306eab510d6349042079b155f36da184b00a" }
+cuelight-core = { git = "https://github.com/cuelight-org/cuelight", rev = "3a5c306eab510d6349042079b155f36da184b00a" }
+cuelight-loader = { git = "https://github.com/cuelight-org/cuelight", rev = "3a5c306eab510d6349042079b155f36da184b00a" }
+cuelight-audio = { git = "https://github.com/cuelight-org/cuelight", rev = "3a5c306eab510d6349042079b155f36da184b00a", default-features = false }
 # iced is unreleased on the wgpu the engine uses (29), so it is pinned to
 # a commit of master: the last on wgpu 29 that we checked.
 iced = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2", features = ["image-without-codecs", "svg"] }

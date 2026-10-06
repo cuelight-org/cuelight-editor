@@ -6,6 +6,31 @@ use super::*;
 use cuelight_core::Influence;
 use cuelight_editor_core::document::Pointer;
 use cuelight_editor_core::edit;
+use cuelight_editor_core::fields;
+
+/// A field typed into: one of the picked layer's properties, or one of
+/// its other fields by label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Typed {
+    Property(Property),
+    Field(&'static str),
+}
+
+/// A field of the picked layer as its row shows it.
+#[derive(Debug, Clone)]
+pub(super) struct LayerField {
+    pub field: &'static fields::Field,
+    /// Its value as the row edits it; `None` when the row cannot (a
+    /// gradient, a list), and shows `raw` instead.
+    pub shown: Option<String>,
+    /// What the engine has when the layer writes nothing.
+    pub default: String,
+    pub raw: String,
+    /// The row's editor can show the value (not a gradient or a list).
+    pub editable: bool,
+    /// The layer writes it; otherwise it is the engine's default.
+    pub written: bool,
+}
 
 /// An edit held back because something other than the base owns the
 /// property at the playhead: a new base would not show until it lets go.
@@ -37,20 +62,108 @@ impl App {
     /// the base value.
     pub(super) fn field(&self, path: &LayerPath, property: Property) -> Option<&str> {
         self.typed(path, property).or_else(|| {
-            self.bases
-                .iter()
-                .find(|(p, _)| *p == property)
-                .map(|(_, base)| base.as_str())
+            self.is_written(property)
+                .then(|| self.placeholder(property))
+                .flatten()
         })
+    }
+
+    /// A property's base value: what the layer writes, or its default,
+    /// which an empty field shows greyed.
+    pub(super) fn placeholder(&self, property: Property) -> Option<&str> {
+        self.bases
+            .iter()
+            .find(|(p, _)| *p == property)
+            .map(|(_, base)| base.as_str())
+    }
+
+    /// Whether the picked layer writes `property`, rather than leaving it
+    /// to its default.
+    pub(super) fn is_written(&self, property: Property) -> bool {
+        self.written.contains(&property)
+    }
+
+    /// Take a property out of the picked layer, back to its default.
+    pub(super) fn reset(&mut self, property: Property) -> Task<Message> {
+        let Some(path) = self.selection.last().cloned() else {
+            return Task::none();
+        };
+        let Some(at) = self.layer_pointer(&path) else {
+            return Task::none();
+        };
+        let Some(document) = &mut self.document else {
+            return Task::none();
+        };
+        if let Err(error) = edit::unset(document, &at, property) {
+            self.status = format!("could not reset: {error}");
+            return Task::none();
+        }
+        let text = document.text();
+        self.finish_reset(&text, tree::property_name(property));
+        if let Some((_, typed)) = &mut self.typed {
+            typed.retain(|(p, _)| *p != property);
+        }
+        Task::none()
+    }
+
+    /// Take a field out of the picked layer, back to its default.
+    pub(super) fn reset_field(&mut self, label: &'static str) -> Task<Message> {
+        let Some(path) = self.selection.last().cloned() else {
+            return Task::none();
+        };
+        let Some(field) = fields::FIELDS.iter().find(|f| f.label == label) else {
+            return Task::none();
+        };
+        let Some(at) = self.layer_pointer(&path) else {
+            return Task::none();
+        };
+        let Some(document) = &mut self.document else {
+            return Task::none();
+        };
+        if let Err(error) = fields::unset(document, &at, field) {
+            self.status = format!("could not reset: {error}");
+            return Task::none();
+        }
+        let text = document.text();
+        self.finish_reset(&text, label.to_owned());
+        if let Some((_, typed)) = &mut self.field_typed {
+            typed.retain(|(l, _)| *l != label);
+        }
+        Task::none()
+    }
+
+    /// Reload after a reset; a show that no longer loads takes it back.
+    fn finish_reset(&mut self, text: &str, name: String) {
+        match self.reload_text(text, true) {
+            Ok(()) => self.status = format!("{name} back to its default"),
+            Err(error) => {
+                if let Some(document) = &mut self.document {
+                    document.undo();
+                }
+                self.status = error;
+            }
+        }
     }
 
     /// The base values of the picked layer's editable properties, after
     /// whatever just changed.
     pub(super) fn refresh_bases(&mut self) {
         self.bases.clear();
-        let (Some(session), Some(path)) = (&self.session, self.selection.last()) else {
+        self.written.clear();
+        let Some(path) = self.selection.last().cloned() else {
             return;
         };
+        // Before the engine is held: finding the layer holds it too.
+        if let (Some(at), Some(document)) = (self.layer_pointer(&path), &self.document) {
+            self.written = tree::PROPERTIES
+                .into_iter()
+                .filter(|p| edit::written(document, &at, *p))
+                .collect();
+        }
+        let Some(session) = &self.session else {
+            return;
+        };
+        let path = &path;
         let engine = lock(&session.engine);
         for property in tree::PROPERTIES {
             if edit::input(property).is_none() {
@@ -68,6 +181,87 @@ impl App {
                 self.bases.push((property, base));
             }
         }
+    }
+
+    /// Apply what was typed and is still waiting, but in `keep`: moving
+    /// on to another field, another layer or a save is what leaving a
+    /// field is, since a field says nothing when it loses the focus. What
+    /// does not read stays typed, marked, and is not applied.
+    pub(super) fn commit_typed(&mut self, keep: Option<Typed>) {
+        let properties: Vec<Property> = self
+            .typed
+            .as_ref()
+            .filter(|(path, _)| self.selection.last() == Some(path))
+            .map(|(_, typed)| typed.iter().map(|(p, _)| *p).collect())
+            .unwrap_or_default();
+        for property in properties {
+            if keep == Some(Typed::Property(property)) || self.typing_error(property).is_some() {
+                continue;
+            }
+            let _ = self.apply(property);
+        }
+        let labels: Vec<&'static str> = self
+            .field_typed
+            .as_ref()
+            .filter(|(path, _)| self.selection.last() == Some(path))
+            .map(|(_, typed)| typed.iter().map(|(l, _)| *l).collect())
+            .unwrap_or_default();
+        for label in labels {
+            if keep == Some(Typed::Field(label)) || self.field_typing_error(label).is_some() {
+                continue;
+            }
+            let _ = self.apply_field(label);
+        }
+    }
+
+    /// Whether anything typed is waiting to be applied, for the picked
+    /// layer.
+    pub(super) fn has_typed(&self) -> bool {
+        let here = |path: &LayerPath| self.selection.last() == Some(path);
+        self.typed
+            .as_ref()
+            .is_some_and(|(path, typed)| here(path) && !typed.is_empty())
+            || self
+                .field_typed
+                .as_ref()
+                .is_some_and(|(path, typed)| here(path) && !typed.is_empty())
+    }
+
+    /// Why what is typed into a property's field does not read, if it
+    /// does not: what its row shows under it.
+    pub(super) fn typing_error(&self, property: Property) -> Option<String> {
+        let path = self.selection.last()?;
+        let typed = self.typed(path, property)?;
+        if typed.trim().is_empty() {
+            return None;
+        }
+        edit::parse(property, typed).err()
+    }
+
+    /// The same for one of the layer's other fields.
+    pub(super) fn field_typing_error(&self, label: &str) -> Option<String> {
+        let (path, typed) = self.field_typed.as_ref()?;
+        if self.selection.last() != Some(path) {
+            return None;
+        }
+        let (_, text) = typed.iter().find(|(l, _)| *l == label)?;
+        if text.trim().is_empty() {
+            return None;
+        }
+        let field = fields::FIELDS.iter().find(|f| f.label == label)?;
+        fields::parse(field, text).err()
+    }
+
+    /// Whether a property's field holds typing not applied yet.
+    pub(super) fn is_pending(&self, path: &LayerPath, property: Property) -> bool {
+        self.typed(path, property).is_some()
+    }
+
+    /// The same for one of the layer's other fields.
+    pub(super) fn is_field_pending(&self, label: &str) -> bool {
+        self.field_typed.as_ref().is_some_and(|(path, typed)| {
+            self.selection.last() == Some(path) && typed.iter().any(|(l, _)| *l == label)
+        })
     }
 
     pub(super) fn type_into(&mut self, property: Property, text: String) {
@@ -92,6 +286,14 @@ impl App {
         let Some(typed) = self.typed(&path, property).map(str::to_owned) else {
             return Task::none();
         };
+        // An emptied field takes the property back to its default.
+        if typed.trim().is_empty() && edit::input(property) != Some(edit::Input::Colour) {
+            return if self.is_written(property) {
+                self.reset(property)
+            } else {
+                Task::none()
+            };
+        }
         let value = match edit::parse(property, &typed) {
             Ok(value) => value,
             Err(error) => {
@@ -140,6 +342,156 @@ impl App {
         Task::none()
     }
 
+    /// The picked layer's fields as their rows show them, after whatever
+    /// just changed: what the layer writes, or the engine's default.
+    pub(super) fn refresh_fields_of_layer(&mut self) {
+        self.layer_fields.clear();
+        let (Some(session), Some(path)) = (&self.session, self.selection.last()) else {
+            return;
+        };
+        let Some(at) = self.layer_pointer(path) else {
+            return;
+        };
+        let Some(written) = self
+            .document
+            .as_ref()
+            .and_then(|d| d.get(&at))
+            .map(|n| n.value())
+        else {
+            return;
+        };
+        let engine = lock(&session.engine);
+        let read = engine
+            .show()
+            .and_then(|show| tree::layer(show, path))
+            .and_then(|layer| serde_json::to_value(layer).ok())
+            .unwrap_or_default();
+        drop(engine);
+        let Some(kind) = fields::kind(&written).map(str::to_owned) else {
+            return;
+        };
+        for field in fields::of(&kind) {
+            let own = fields::read(&written, field);
+            let value = own.or_else(|| fields::read(&read, field));
+            self.layer_fields.push(LayerField {
+                field,
+                shown: own.and_then(|v| fields::show(field, v)),
+                default: fields::read(&read, field)
+                    .and_then(|v| fields::show(field, v))
+                    .unwrap_or_default(),
+                raw: value.map(ToString::to_string).unwrap_or_default(),
+                editable: value.is_none_or(|v| fields::show(field, v).is_some()),
+                written: own.is_some(),
+            });
+        }
+    }
+
+    /// What a field's row shows: what was typed into it, or its value.
+    pub(super) fn field_text(&self, label: &str) -> Option<&str> {
+        if let Some((path, typed)) = &self.field_typed
+            && self.selection.last() == Some(path)
+            && let Some((_, text)) = typed.iter().find(|(l, _)| *l == label)
+        {
+            return Some(text);
+        }
+        self.layer_fields
+            .iter()
+            .find(|f| f.field.label == label)
+            .and_then(|f| f.shown.as_deref())
+    }
+
+    pub(super) fn type_into_field(&mut self, label: &'static str, text: String) {
+        let Some(path) = self.selection.last().cloned() else {
+            return;
+        };
+        match &mut self.field_typed {
+            Some((typed_for, typed)) if *typed_for == path => {
+                typed.retain(|(l, _)| *l != label);
+                typed.push((label, text));
+            }
+            _ => self.field_typed = Some((path, vec![(label, text)])),
+        }
+    }
+
+    /// Enter in a field's row, a toggle flipped or a word picked: write
+    /// it into the layer and reload at the playhead.
+    pub(super) fn apply_field(&mut self, label: &'static str) -> Task<Message> {
+        let Some(path) = self.selection.last().cloned() else {
+            return Task::none();
+        };
+        let Some(field) = fields::FIELDS.iter().find(|f| f.label == label) else {
+            return Task::none();
+        };
+        let Some(typed) = self.field_text(label).map(str::to_owned) else {
+            return Task::none();
+        };
+        // An emptied field takes it back to its default.
+        if typed.trim().is_empty() {
+            let written = self
+                .layer_fields
+                .iter()
+                .any(|f| f.field.label == label && f.written);
+            return if written {
+                self.reset_field(label)
+            } else {
+                Task::none()
+            };
+        }
+        let value = match fields::parse(field, &typed) {
+            Ok(value) => value,
+            Err(error) => {
+                self.status = error;
+                return Task::none();
+            }
+        };
+        let Some(at) = self.layer_pointer(&path) else {
+            return Task::none();
+        };
+        let Some(document) = &mut self.document else {
+            return Task::none();
+        };
+        // The default is not written down: setting it takes the key out.
+        if document
+            .get(&at)
+            .is_some_and(|layer| fields::is_default(&layer.value(), field, &value))
+        {
+            let written = fields::written(document, &at, field);
+            if let Some((_, typed)) = &mut self.field_typed {
+                typed.retain(|(l, _)| *l != label);
+            }
+            if written {
+                return self.reset_field(label);
+            }
+            self.status = format!("{label} is its default");
+            return Task::none();
+        }
+        if let Err(error) = fields::set(document, &at, field, value.clone()) {
+            self.status = format!("could not edit: {error}");
+            return Task::none();
+        }
+        let text = document.text();
+        match self.reload_text(&text, true) {
+            Ok(()) => {
+                if let Some((_, typed)) = &mut self.field_typed {
+                    typed.retain(|(l, _)| *l != label);
+                }
+                self.status = format!("{label} = {value}");
+            }
+            Err(error) => {
+                if let Some(document) = &mut self.document {
+                    document.undo();
+                }
+                self.status = error;
+            }
+        }
+        Task::none()
+    }
+
+    pub(super) fn put_field(&mut self, label: &'static str, value: String) -> Task<Message> {
+        self.type_into_field(label, value);
+        self.apply_field(label)
+    }
+
     /// A toggle flipped or a name picked: set it as if typed.
     pub(super) fn put(&mut self, property: Property, value: String) -> Task<Message> {
         self.type_into(property, value);
@@ -162,7 +514,9 @@ impl App {
             Property::Video => Kind::Video,
             _ => return None,
         };
-        let at = edit::pointer(&self.layer_pointer(path)?, property)?;
+        // The inspector calls this with the engine held: the show it
+        // passes is all there is to go by.
+        let at = edit::pointer(&self.pointer_in(show, path)?, property)?;
         if self
             .document
             .as_ref()
@@ -202,6 +556,24 @@ impl App {
         let Some(document) = &mut self.document else {
             return;
         };
+        // The default is not written down: setting it takes the key out.
+        // A drag (no audit) writes freely and settles this when it ends.
+        let default = audit
+            && document
+                .get(&at)
+                .is_some_and(|layer| edit::is_default(&layer.value(), property, &value));
+        if default {
+            let written = edit::written(document, &at, property);
+            if let Some((_, fields)) = &mut self.typed {
+                fields.retain(|(p, _)| *p != property);
+            }
+            if written {
+                let _ = self.reset(property);
+            } else {
+                self.status = format!("{} is its default", tree::property_name(property));
+            }
+            return;
+        }
         if let Err(error) = edit::set(document, &at, property, value.clone()) {
             self.status = format!("could not edit: {error}");
             return;
@@ -251,7 +623,12 @@ impl App {
     fn layer_pointer(&self, path: &LayerPath) -> Option<Pointer> {
         let session = self.session.as_ref()?;
         let engine = lock(&session.engine);
-        let show = engine.show()?;
+        self.pointer_in(engine.show()?, path)
+    }
+
+    /// `layer_pointer` for a caller that holds the engine already: the
+    /// engine's lock is not taken twice.
+    fn pointer_in(&self, show: &cuelight_core::Show, path: &LayerPath) -> Option<Pointer> {
         let layer = tree::layer(show, path)?;
         let pointer = Pointer::parse(&tree::pointer(show, path)?).ok()?;
         let node = self.document.as_ref()?.get(&pointer)?.value();
@@ -394,9 +771,32 @@ impl App {
         if scrub.dragging {
             // Where the mouse came up is where it ends, then the audit
             // the drag left out.
+            let (path, property) = (scrub.path.clone(), scrub.property);
             self.scrub = Some(scrub);
             let _ = self.scrub_apply();
             self.scrub = None;
+            // A drag that ends on the default leaves the key out, in the
+            // same step.
+            let at = self.layer_pointer(&path);
+            let ends_default = at.as_ref().is_some_and(|at| {
+                let Some(document) = &self.document else {
+                    return false;
+                };
+                let here = edit::pointer(at, property).and_then(|here| document.get(&here));
+                match (document.get(at), here) {
+                    (Some(layer), Some(now)) => {
+                        edit::is_default(&layer.value(), property, &now.value())
+                    }
+                    _ => false,
+                }
+            });
+            if ends_default
+                && let (Some(at), Some(document)) = (at, &mut self.document)
+                && edit::unset(document, &at, property).is_ok()
+            {
+                let text = document.text();
+                let _ = self.reload_text(&text, false);
+            }
             if let Some(document) = &mut self.document {
                 document.end_step();
             }

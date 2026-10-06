@@ -241,6 +241,9 @@ pub struct Document {
     /// How many `begin_step` calls are open; while any is, edits join
     /// the step on top of the undo stack.
     open: usize,
+    /// The text when the outermost open step began: a step that ends
+    /// where it began changed nothing, and is not kept.
+    began: Option<String>,
 }
 
 impl Document {
@@ -261,6 +264,7 @@ impl Document {
             redo: Vec::new(),
             saved: Some(0),
             open: 0,
+            began: None,
         })
     }
 
@@ -334,6 +338,7 @@ impl Document {
         if self.open == 0 {
             self.redo.clear();
             self.undo.push(Step::default());
+            self.began = Some(self.text());
         }
         self.open += 1;
     }
@@ -342,8 +347,18 @@ impl Document {
     /// leaves nothing to undo.
     pub fn end_step(&mut self) {
         self.open = self.open.saturating_sub(1);
-        if self.open == 0 && self.undo.last().is_some_and(|step| step.edits.is_empty()) {
+        if self.open > 0 {
+            return;
+        }
+        let began = self.began.take();
+        if self.undo.last().is_some_and(|step| step.edits.is_empty()) {
             self.undo.pop();
+        } else if began.is_some_and(|text| text == self.text()) {
+            // A drag that came back to where it started: take its edits
+            // back and keep nothing to undo or redo.
+            if self.undo() {
+                self.redo.pop();
+            }
         }
     }
 
@@ -1059,6 +1074,21 @@ mod tests {
             text.contains("},\n    {\n      \"name\": \"g\",\n      \"type\": \"group\",\n      \"children\": [\n        {\"name\": \"c\", \"type\": \"shape\"}\n      ]\n    }\n  ],"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_step_that_ends_where_it_began_is_not_kept() {
+        let text = "{\"a\": 1}";
+        let mut document = Document::parse(text).unwrap();
+        let b = Pointer::parse("/b").unwrap();
+        document.begin_step();
+        document.insert(&b, json!(2)).unwrap();
+        document.set(&b, json!(3)).unwrap();
+        document.remove(&b).unwrap();
+        document.end_step();
+        assert_eq!(document.text(), text);
+        assert!(!document.can_undo() && !document.can_redo());
+        assert!(!document.is_dirty());
     }
 
     #[test]

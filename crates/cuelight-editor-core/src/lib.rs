@@ -7,6 +7,7 @@ pub mod artwork;
 pub mod assets;
 pub mod document;
 pub mod edit;
+pub mod fields;
 pub mod inputs;
 pub mod log;
 pub mod opened;

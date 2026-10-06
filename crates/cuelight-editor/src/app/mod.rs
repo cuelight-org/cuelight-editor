@@ -179,6 +179,13 @@ pub struct App {
     /// The base value of each editable property of the picked layer, as
     /// its field shows it. Kept here because a field borrows it.
     bases: Vec<(Property, String)>,
+    /// The picked layer's properties it writes; the rest are defaults.
+    written: Vec<Property>,
+    /// The picked layer's other fields, as their rows show them. Kept
+    /// here because a row's field borrows its text.
+    layer_fields: Vec<editing::LayerField>,
+    /// What was typed into those rows, for the layer it was typed for.
+    field_typed: Option<(LayerPath, Vec<(&'static str, String)>)>,
     /// A number being dragged by its label.
     scrub: Option<editing::Scrub>,
     /// Whether the system asks for a light or a dark theme: iced draws
@@ -279,6 +286,19 @@ pub enum Message {
     Apply(Property),
     /// A toggle flipped or a name picked: set the base value to it.
     Put(Property, String),
+    /// A click or Tab while something typed waits: it is applied, since
+    /// that is what leaving a field looks like.
+    Commit,
+    /// Take a property out of the layer, back to its default.
+    Reset(Property),
+    /// Take a field out of the layer, back to its default.
+    ResetField(&'static str),
+    /// Text typed into one of the layer's other fields, by its label.
+    TypeField(&'static str, String),
+    /// Enter in a field's row: write what was typed.
+    ApplyField(&'static str),
+    /// A field's toggle flipped or word picked.
+    PutField(&'static str, String),
     /// Set the base anyway, though a timeline or binding owns it now.
     EditOwned,
     /// Leave the property as it was.
@@ -427,7 +447,10 @@ impl App {
             typed: None,
             owned: None,
             bases: Vec::new(),
+            written: Vec::new(),
             scrub: None,
+            layer_fields: Vec::new(),
+            field_typed: None,
             mode: iced::theme::Mode::None,
             scale_factor: 1.0,
             fitted: Cell::new(1.0),
@@ -498,6 +521,7 @@ impl App {
         let task = self.handle(message);
         self.refresh_fields();
         self.refresh_bases();
+        self.refresh_fields_of_layer();
         task
     }
 
@@ -517,6 +541,24 @@ impl App {
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
+        // Leaving a field applies it: typing into another, picking
+        // another layer, saving.
+        match &message {
+            Message::Type(property, _) => {
+                self.commit_typed(Some(editing::Typed::Property(*property)))
+            }
+            Message::TypeField(label, _) => self.commit_typed(Some(editing::Typed::Field(label))),
+            Message::Choose(_)
+            | Message::Pick(..)
+            | Message::Deselect
+            | Message::Save
+            | Message::ScrubStart(_)
+            | Message::Put(..)
+            | Message::PutField(..)
+            | Message::Reset(_)
+            | Message::ResetField(_) => self.commit_typed(None),
+            _ => {}
+        }
         match message {
             Message::OpenFile => {
                 if self.asking {
@@ -540,6 +582,18 @@ impl App {
             }
             Message::Apply(property) => self.apply(property),
             Message::Put(property, value) => self.put(property, value),
+            Message::Commit => {
+                self.commit_typed(None);
+                Task::none()
+            }
+            Message::Reset(property) => self.reset(property),
+            Message::ResetField(label) => self.reset_field(label),
+            Message::TypeField(label, text) => {
+                self.type_into_field(label, text);
+                Task::none()
+            }
+            Message::ApplyField(label) => self.apply_field(label),
+            Message::PutField(label, value) => self.put_field(label, value),
             Message::EditOwned => self.edit_owned(),
             Message::KeepOwned => {
                 self.owned = None;
@@ -960,6 +1014,7 @@ impl App {
                 self.typed = None;
                 self.owned = None;
                 self.scrub = None;
+                self.field_typed = None;
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
                 self.edits.clear();
                 let task = self.listen(&sounds, sound_files);
@@ -1027,6 +1082,22 @@ impl App {
                 _ => None,
             },
         ));
+        // Typing waits to be applied: a click anywhere, or Tab, is the
+        // field being left, which a field itself does not say.
+        if self.has_typed() {
+            subscriptions.push(iced::event::listen_with(
+                |event, _status, _window| match event {
+                    iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => {
+                        Some(Message::Commit)
+                    }
+                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
+                        ..
+                    }) => Some(Message::Commit),
+                    _ => None,
+                },
+            ));
+        }
         // A label held: the mouse anywhere moves its number, until it
         // comes up.
         if self.scrub.as_ref().is_some_and(|s| s.dragging) {

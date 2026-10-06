@@ -111,6 +111,9 @@ impl App {
         let mut owned = Vec::new();
         let mut heading = "";
         for property in tree::PROPERTIES {
+            if !tree::applies(property, &layer.kind) {
+                continue;
+            }
             let sources = engine.explain(path, property);
             if sources.is_empty() {
                 continue;
@@ -184,31 +187,43 @@ impl App {
                 _ => None,
             });
             let input = edit::input(property);
+            let written = self.is_written(property);
+            let error = self.typing_error(property);
             let (field, note): (Element<'a, Message>, String) = match (input, base) {
                 (Some(input), Some(base)) => {
-                    let shown = self.field(path, property).unwrap_or_default();
-                    let note = if base == value {
-                        badge
-                    } else {
-                        format!("{badge}: {value}")
+                    // A value the layer writes shows as itself; a default
+                    // shows greyed in an empty field, and the note says so.
+                    let shown = self.field(path, property);
+                    let fallback = self.placeholder(property).unwrap_or_default();
+                    let note = match (base == value, written) {
+                        (true, true) => String::new(),
+                        (true, false) => "default".to_owned(),
+                        (false, _) => format!("{badge}: {value}"),
                     };
+                    let marked = field_style(self.is_pending(path, property), error.is_some());
                     let typed = move || {
-                        text_input("", shown)
+                        text_input(fallback, shown.unwrap_or_default())
                             .on_input(move |typed| Message::Type(property, typed))
                             .on_submit(Message::Apply(property))
                             .size(13)
                             .padding([1, 4])
                             .width(Fill)
+                            .style(marked)
                     };
                     let field = match input {
-                        edit::Input::Toggle => toggler(shown == "true")
+                        edit::Input::Toggle => toggler(shown.unwrap_or(fallback) == "true")
                             .on_toggle(move |on| Message::Put(property, on.to_string()))
                             .size(14)
                             .boxed(),
                         edit::Input::Choice => match self.choices(show, path, property) {
                             Some(options) => {
-                                pick_list(Some(shown.to_owned()), options, String::clone)
+                                pick_list(shown.map(str::to_owned), options, String::clone)
                                     .on_select(move |name| Message::Put(property, name))
+                                    .placeholder(if fallback.is_empty() {
+                                        "default".to_owned()
+                                    } else {
+                                        format!("default ({fallback})")
+                                    })
                                     .text_size(13)
                                     .padding([1, 4])
                                     .width(Fill)
@@ -218,7 +233,7 @@ impl App {
                             // its JSON for now.
                             None => text(value.clone()).size(13).width(Fill).boxed(),
                         },
-                        edit::Input::Colour => row![swatch(shown), typed()]
+                        edit::Input::Colour => row![swatch(shown.unwrap_or(fallback)), typed()]
                             .spacing(4)
                             .align_y(iced::Center)
                             .boxed(),
@@ -229,14 +244,24 @@ impl App {
                 _ => (text(value).size(13).width(Fill).boxed(), badge),
             };
             panel = panel.push(
-                row![name, field, text(note).size(12)]
-                    .spacing(6)
-                    .align_y(iced::Center)
-                    .boxed(),
+                row![
+                    name,
+                    field,
+                    reset(written.then_some(Message::Reset(property))),
+                    text(note).size(12)
+                ]
+                .spacing(6)
+                .align_y(iced::Center)
+                .boxed(),
             );
+            if let Some(error) = error {
+                panel = panel.push(problem(error));
+            }
             if unfolded
                 && input == Some(edit::Input::Colour)
-                && let Some(shown) = self.field(path, property)
+                && let Some(shown) = self
+                    .field(path, property)
+                    .or_else(|| self.placeholder(property))
             {
                 panel = panel.push(channels(property, shown));
             }
@@ -250,6 +275,13 @@ impl App {
                         .boxed(),
                     );
                 }
+            }
+        }
+
+        if !self.layer_fields.is_empty() {
+            panel = panel.push(container(text("LAYER").size(12)).padding([6, 0]).boxed());
+            for field in &self.layer_fields {
+                panel = panel.push(self.field_row(field));
             }
         }
 
@@ -353,6 +385,78 @@ impl App {
         panel
     }
 
+    /// One of the layer's other fields: its name, an editor fitting it,
+    /// and whether the layer writes it or has the engine's default.
+    fn field_row<'a>(&'a self, field: &'a super::editing::LayerField) -> Element<'a, Message> {
+        use cuelight_editor_core::assets::Kind;
+        use cuelight_editor_core::fields::Input;
+        let label = field.field.label;
+        let name = container(text(label).size(13)).width(86).padding([2, 6]);
+        let shown = self.field_text(label);
+        let fallback = field.default.as_str();
+        let error = self.field_typing_error(label);
+        let marked = field_style(self.is_field_pending(label), error.is_some());
+        let words = |words: Vec<String>| {
+            pick_list(shown.map(str::to_owned), words, String::clone)
+                .on_select(move |word| Message::PutField(label, word))
+                .placeholder(if fallback.is_empty() {
+                    "default".to_owned()
+                } else {
+                    format!("default ({fallback})")
+                })
+                .text_size(13)
+                .padding([1, 4])
+                .width(Fill)
+                .boxed()
+        };
+        let typed = || {
+            text_input(fallback, shown.unwrap_or_default())
+                .on_input(move |typed| Message::TypeField(label, typed))
+                .on_submit(Message::ApplyField(label))
+                .size(13)
+                .padding([1, 4])
+                .width(Fill)
+                .style(marked)
+        };
+        let editor = if !field.editable {
+            // A gradient, a list: shown as written, edited in the JSON.
+            text(field.raw.clone()).size(12).width(Fill).boxed()
+        } else {
+            match field.field.input {
+                Input::Choice(choices) => words(choices.iter().map(|w| (*w).to_owned()).collect()),
+                Input::Artwork => words(
+                    self.library
+                        .iter()
+                        .filter(|a| matches!(a.kind, Kind::Image | Kind::Vector))
+                        .map(|a| a.name.clone())
+                        .collect(),
+                ),
+                Input::Toggle => toggler(shown.unwrap_or(fallback) == "true")
+                    .on_toggle(move |on| Message::PutField(label, on.to_string()))
+                    .size(14)
+                    .boxed(),
+                Input::Colour => row![swatch(shown.unwrap_or(fallback)), typed()]
+                    .spacing(4)
+                    .align_y(iced::Center)
+                    .boxed(),
+                Input::Number | Input::Count | Input::Pair | Input::Text => typed().boxed(),
+            }
+        };
+        let note = if field.written { "" } else { "default" };
+        let line = row![
+            name,
+            editor,
+            reset(field.written.then_some(Message::ResetField(label))),
+            text(note).size(12)
+        ]
+        .spacing(6)
+        .align_y(iced::Center);
+        match error {
+            Some(error) => column![line, problem(error)].boxed(),
+            None => line.boxed(),
+        }
+    }
+
     /// The layer's text as the document has it, if the document has that
     /// layer at the layer's place.
     pub(super) fn written(
@@ -406,6 +510,50 @@ fn json_text<'a>(json: &str, theme: &Theme) -> Element<'a, Message> {
         .size(12)
         .font(iced::Font::new("DM Mono"))
         .boxed()
+}
+
+/// A field's border: amber while what is typed waits to be applied (Enter,
+/// or moving on to another field), red while it does not read.
+fn field_style(
+    pending: bool,
+    invalid: bool,
+) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + Copy {
+    move |theme, status| {
+        let mut style = text_input::default(theme, status);
+        let palette = theme.palette();
+        let mark = if invalid {
+            Some(palette.danger.base.color)
+        } else if pending {
+            Some(palette.warning.base.color)
+        } else {
+            None
+        };
+        if let Some(color) = mark {
+            style.border.color = color;
+            style.border.width = 1.5;
+        }
+        style
+    }
+}
+
+/// Why what is typed does not read, under its row.
+fn problem<'a>(error: String) -> Element<'a, Message> {
+    container(text(error).size(11).style(text::danger))
+        .padding([0, 92])
+        .boxed()
+}
+
+/// The button that takes a written value back to its default, or the
+/// room it takes, so the rows line up.
+fn reset<'a>(on_press: Option<Message>) -> Element<'a, Message> {
+    match on_press {
+        Some(message) => button(text("×").size(12))
+            .on_press(message)
+            .padding([0, 4])
+            .style(button::text)
+            .boxed(),
+        None => space::horizontal().width(18).boxed(),
+    }
 }
 
 /// A colour's four channels, `#RRGGBB` or `#RRGGBBAA`; none is white,

@@ -4,3 +4,5 @@
 pub mod app;
 pub mod dialog;
 pub mod stage;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod watcher;

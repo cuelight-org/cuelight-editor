@@ -871,6 +871,7 @@ dependencies = [
  "png 0.18.1",
  "rfd",
  "serde_json",
+ "tempfile",
  "vello",
  "wasm-bindgen",
  "wasm-bindgen-futures",

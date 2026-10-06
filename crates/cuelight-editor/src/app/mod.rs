@@ -23,6 +23,7 @@ use iced::{Element, Fill, Font, Subscription, Task, Theme};
 use crate::dialog::{self, Picked};
 use crate::stage::Pick;
 use cuelight_editor_core::opened::{self, Opened, Summary};
+use cuelight_editor_core::save::{self, Origin};
 use cuelight_editor_core::session::Session;
 
 mod assets;
@@ -95,6 +96,10 @@ pub struct App {
     audio: Option<std::rc::Rc<std::cell::RefCell<cuelight_audio::WebAudio>>>,
     /// Where the open show came from, and what it holds.
     source: String,
+    /// Where a save writes the show, and every file it shipped as last
+    /// opened or saved.
+    origin: Option<Origin>,
+    files: BTreeMap<String, Vec<u8>>,
     summary: Summary,
     /// The show's assets, and a thumbnail for each piece of artwork.
     library: Vec<Asset>,
@@ -245,6 +250,8 @@ pub enum Message {
     #[cfg(not(target_arch = "wasm32"))]
     OpenFolder,
     Picked(Option<Picked>),
+    /// Write the show back where it came from; in a browser, download it.
+    Save,
     #[cfg(not(target_arch = "wasm32"))]
     Dropped(std::path::PathBuf),
     /// A frame: the instant to move the show to.
@@ -326,6 +333,8 @@ impl App {
             screenshot: None,
             audio: None,
             source: String::new(),
+            origin: None,
+            files: BTreeMap::new(),
             summary: Summary::default(),
             library: Vec::new(),
             thumbs: Vec::new(),
@@ -410,6 +419,9 @@ impl App {
 
     pub fn title(&self) -> String {
         match &self.session {
+            Some(_) if self.document.as_ref().is_some_and(Document::is_dirty) => {
+                format!("{}* - cuelight editor", self.summary.name)
+            }
             Some(_) => format!("{} - cuelight editor", self.summary.name),
             None => "cuelight editor".to_owned(),
         }
@@ -463,6 +475,7 @@ impl App {
                 self.asking = true;
                 Task::perform(dialog::pick_folder(), Message::Picked)
             }
+            Message::Save => self.save(),
             Message::Picked(picked) => {
                 self.asking = false;
                 match picked {
@@ -549,6 +562,7 @@ impl App {
                     return Task::none();
                 }
                 match name.as_str() {
+                    "s" if modifiers.control() => self.update(Message::Save),
                     "Escape" => self.update(Message::Deselect),
                     " " => self.update(Message::TogglePause),
                     "r" => self.update(Message::Restart),
@@ -752,6 +766,33 @@ impl App {
         }
     }
 
+    /// Save the open show where it came from; a browser downloads it.
+    fn save(&mut self) -> Task<Message> {
+        let (Some(origin), Some(document)) = (&self.origin, &mut self.document) else {
+            return Task::none();
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = save::save(origin, &mut self.files, document)
+            .map(|()| format!("saved {}", self.source));
+        #[cfg(target_arch = "wasm32")]
+        let result = save::download(origin, &self.files, document).and_then(|(name, bytes)| {
+            dialog::offer_download(&name, &bytes).map_err(save::SaveError::Write)?;
+            document.mark_saved();
+            Ok(format!("downloaded {name}"))
+        });
+        match result {
+            Ok(said) => {
+                self.status = said;
+                log::info!("{}", self.status);
+            }
+            Err(error) => {
+                self.status = format!("could not save: {error}");
+                log::warn!("{}", self.status);
+            }
+        }
+        Task::none()
+    }
+
     fn open(&mut self, result: Result<Opened, opened::OpenError>) -> Task<Message> {
         match result {
             Ok(opened) => {
@@ -759,6 +800,7 @@ impl App {
                 log::info!("{}", self.status);
                 let Opened {
                     source,
+                    origin,
                     engine,
                     summary,
                     driver,
@@ -770,6 +812,7 @@ impl App {
                     ..
                 } = opened;
                 self.source = source;
+                self.origin = Some(origin);
                 self.summary = summary;
                 self.thumbs = thumbs(&engine, &library);
                 self.faces = faces(&engine, &files, &library);
@@ -793,6 +836,7 @@ impl App {
                     .log
                     .extend(cuelight_editor_core::log::load(&self.summary.problems));
                 session.audit(&document.text());
+                self.files = files;
                 self.document = Some(document);
                 self.session = Some(session);
                 // The window's scale factor bounds the zoom; ask once a
@@ -867,6 +911,8 @@ impl App {
                     .on_press_maybe((!self.asking).then_some(Message::OpenFolder)),
             );
         }
+        let dirty = self.document.as_ref().is_some_and(Document::is_dirty);
+        bar = bar.push(button("Save").on_press_maybe(dirty.then_some(Message::Save)));
         if let Some(session) = &self.session {
             // The playhead covers one pass of the driver, or as far as
             // the show has played, whichever is longer. Following the

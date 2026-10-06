@@ -1,6 +1,7 @@
 //! What the cuelight editor knows without a window: opening a show in
-//! any of its forms, and playing it on a clock. No iced, no GPU, so it
-//! compiles in seconds and its tests run anywhere, the browser included.
+//! any of its forms, playing it on a clock, and saving it back. No iced,
+//! no GPU, so it compiles in seconds and its tests run anywhere, the
+//! browser included.
 
 pub mod artwork;
 pub mod assets;
@@ -8,6 +9,7 @@ pub mod document;
 pub mod inputs;
 pub mod log;
 pub mod opened;
+pub mod save;
 pub mod session;
 pub mod specimen;
 pub mod syntax;

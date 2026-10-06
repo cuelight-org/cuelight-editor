@@ -60,6 +60,44 @@ fn shows_what_it_opened() {
 }
 
 #[test]
+fn an_edited_show_is_saved_with_ctrl_s() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cuelight-editor-core/tests/fixtures/mini"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["show.json", "test-driver.json", "assets/dot.png"] {
+        let to = dir.path().join(name);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(std::path::Path::new(fixture).join(name), to).unwrap();
+    }
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dir.path().into()));
+    {
+        let mut ui = simulator(app.view());
+        assert!(ui.find("Save").is_ok());
+    }
+    assert_eq!(app.title(), "mini - cuelight editor");
+
+    let size = cuelight_editor_core::document::Pointer::parse("/size/0").unwrap();
+    app.document
+        .as_mut()
+        .unwrap()
+        .set(&size, serde_json::json!(65))
+        .unwrap();
+    assert_eq!(app.title(), "mini* - cuelight editor");
+    let _ = app.update(Message::KeyPressed(
+        keyboard::Key::Character("s".into()),
+        keyboard::Modifiers::CTRL,
+    ));
+    assert!(app.status.starts_with("saved "), "{}", app.status);
+    assert_eq!(app.title(), "mini - cuelight editor");
+    let saved = std::fs::read_to_string(dir.path().join("show.json")).unwrap();
+    assert_eq!(saved, app.document.as_ref().unwrap().text());
+    assert!(saved.contains("65"));
+}
+
+#[test]
 fn the_stage_zooms_and_fits_again() {
     let (mut app, _) = App::new();
     let dir = concat!(

@@ -41,10 +41,13 @@ web-sys = { version = "0.3", features = [
     "Window", "Location", "Response", "UrlSearchParams",
     # dropping a file on the page
     "Document", "EventTarget", "Event", "DragEvent", "DataTransfer", "FileList", "File", "Blob",
+    # saving is a download
+    "Url", "Element", "HtmlElement", "HtmlAnchorElement",
 ] }
 
 [dev-dependencies]
 iced_test.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

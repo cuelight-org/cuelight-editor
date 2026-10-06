@@ -1,4 +1,5 @@
-//! The open dialogs, native and web.
+//! The open dialogs, native and web, and the download that saves in a
+//! browser.
 //!
 //! On the desktop a dialog gives back a path, and the loader reads the
 //! folder, pack or file itself. In a browser there is no path, only the
@@ -120,4 +121,29 @@ pub fn drops() -> impl iced::futures::Stream<Item = Picked> {
         dropped.forget();
     }
     receiver
+}
+
+/// In a browser, hand `bytes` to the person as a download named `name`:
+/// a page cannot write a file back where it came from, so this is what
+/// saving is there.
+#[cfg(target_arch = "wasm32")]
+pub fn offer_download(name: &str, bytes: &[u8]) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+
+    let said = |e: wasm_bindgen::JsValue| format!("{e:?}");
+    let document = web_sys::window()
+        .and_then(|w| w.document())
+        .ok_or("no document")?;
+    let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts).map_err(said)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(said)?;
+    let link: web_sys::HtmlAnchorElement = document
+        .create_element("a")
+        .map_err(said)?
+        .dyn_into()
+        .map_err(|_| "not a link".to_owned())?;
+    link.set_href(&url);
+    link.set_download(name);
+    link.click();
+    web_sys::Url::revoke_object_url(&url).map_err(said)
 }

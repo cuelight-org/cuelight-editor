@@ -20,7 +20,7 @@ serde_json.workspace = true
 # draws with (29 today); cargo unifies them, and a mismatch fails the
 # build rather than the picture.
 vello = "0.10"
-wgpu = { version = "29", default-features = false }
+wgpu = { version = "30", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"

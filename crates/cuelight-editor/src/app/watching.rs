@@ -85,30 +85,7 @@ impl App {
         let document = Document::parse(&text).map_err(|e| {
             format!("show.json on disk does not read ({e}); still showing the last version")
         })?;
-        let Some(session) = &mut self.session else {
-            return Ok(());
-        };
-        let findings = session.reload(&text, Instant::now()).map_err(|e| {
-            format!("show.json on disk does not load ({e}); still showing the last version")
-        })?;
-        let findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
-        session
-            .log
-            .extend(cuelight_editor_core::log::load(&findings));
-        session.audit(&text);
-        let engine = lock(&session.engine);
-        if let Some(show) = engine.show() {
-            self.rows = tree::rows(show);
-            self.inputs = Inputs::of(show);
-        }
-        self.summary = opened::resummarize(&engine, &self.summary, &findings);
-        drop(engine);
-        // What was picked stays picked, where the new show still has it.
-        let rows = &self.rows;
-        self.selection.retain(|picked| {
-            rows.iter()
-                .any(|row| matches!(row, Row::Layer { path, .. } if path == picked))
-        });
+        self.reload_text(&text)?;
         self.document = Some(document);
         self.files = change.files;
         Ok(())

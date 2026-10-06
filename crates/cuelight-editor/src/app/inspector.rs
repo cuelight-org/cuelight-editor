@@ -3,11 +3,12 @@
 
 use cuelight_core::{Influence, Layer, LayerKind, LayerPath, Property, TimelineOwner, Value};
 use cuelight_editor_core::document::Pointer;
+use cuelight_editor_core::edit;
 use cuelight_editor_core::inputs;
 use cuelight_editor_core::syntax::{self, Token};
 use cuelight_editor_core::tree;
 use iced::widget::text::Span;
-use iced::widget::{Column, button, column, container, rich_text, row, span, text};
+use iced::widget::{Column, button, column, container, rich_text, row, span, text, text_input};
 use iced::{Element, Fill, Size, Theme};
 
 use super::{App, Message, Tab, theme};
@@ -61,6 +62,30 @@ impl App {
         if self.selection.len() > 1 {
             panel = panel.push(text(format!("{} picked", self.selection.len())).size(12));
         }
+        if let Some(owned) = self.owned.as_ref().filter(|owned| owned.path == *path) {
+            panel = panel.push(
+                container(
+                    column![
+                        text(format!(
+                            "{} is set by {} at the playhead: a new base value shows once it lets go.",
+                            tree::property_name(owned.property),
+                            owned.owner
+                        ))
+                        .size(12),
+                        row![
+                            button(text("Edit base").size(12)).on_press(Message::EditOwned),
+                            // Keying waits for the timelines (spec item 34).
+                            button(text("Key it").size(12)),
+                            button(text("Cancel").size(12)).on_press(Message::KeepOwned),
+                        ]
+                        .spacing(6),
+                    ]
+                    .spacing(4),
+                )
+                .padding(6)
+                .style(container::bordered_box),
+            );
+        }
 
         // Every property the layer has, its value now, and its sources.
         let live: Vec<(Property, Value)> = engine
@@ -93,7 +118,7 @@ impl App {
             let value = live
                 .iter()
                 .find(|(p, _)| *p == property)
-                .map(|(_, v)| inputs::show_value(v))
+                .map(|(_, v)| now(v))
                 .or_else(|| sources.iter().find_map(influence_value))
                 .unwrap_or_default();
             let badge = sources.first().map(winner).unwrap_or_default();
@@ -111,22 +136,48 @@ impl App {
                 }
             }
             let unfolded = self.expanded == Some(property);
-            let line = row![
-                text(tree::property_name(property)).size(13).width(80),
-                text(value).size(13).width(Fill),
-                text(badge).size(12),
-            ]
-            .spacing(8)
-            .align_y(iced::Center);
-            let mut b = button(line)
+            let name = button(text(tree::property_name(property)).size(13))
                 .on_press(Message::Expand((!unfolded).then_some(property)))
-                .width(Fill)
+                .width(86)
                 .padding([2, 6])
-                .style(button::text);
-            if unfolded {
-                b = b.style(button::secondary);
-            }
-            panel = panel.push(b);
+                .style(if unfolded {
+                    button::secondary
+                } else {
+                    button::text
+                });
+            // An editable property shows its base, which an edit changes;
+            // what wins now, if something else does, goes by the badge.
+            let base = sources.iter().find_map(|source| match source {
+                Influence::Base { value } => Some(inputs::show_value(value)),
+                _ => None,
+            });
+            let (field, note): (Element<'a, Message>, String) = match (edit::input(property), base)
+            {
+                (Some(_), Some(base)) => {
+                    let shown = self.field(path, property).unwrap_or_default();
+                    let note = if base == value {
+                        badge
+                    } else {
+                        format!("{badge}: {value}")
+                    };
+                    (
+                        text_input("", shown)
+                            .on_input(move |typed| Message::Type(property, typed))
+                            .on_submit(Message::Apply(property))
+                            .size(13)
+                            .padding([1, 4])
+                            .width(Fill)
+                            .into(),
+                        note,
+                    )
+                }
+                _ => (text(value).size(13).width(Fill).into(), badge),
+            };
+            panel = panel.push(
+                row![name, field, text(note).size(12)]
+                    .spacing(6)
+                    .align_y(iced::Center),
+            );
             if unfolded {
                 for (rank, source) in sources.iter().enumerate() {
                     panel = panel.push(
@@ -286,6 +337,23 @@ fn json_text<'a>(json: &str, theme: &Theme) -> Element<'a, Message> {
         .size(12)
         .font(iced::Font::new("DM Mono"))
         .into()
+}
+
+/// A value as it is now, numbers to two places: a timeline or a
+/// transition moving it leaves long fractions no one reads.
+fn now(value: &Value) -> String {
+    match value {
+        Value::Number(n) => {
+            let rounded = format!("{n:.2}");
+            let rounded = rounded.trim_end_matches('0').trim_end_matches('.');
+            if rounded == "-0" {
+                "0".to_owned()
+            } else {
+                rounded.to_owned()
+            }
+        }
+        _ => inputs::show_value(value),
+    }
 }
 
 /// What an influence hands the property, as text.

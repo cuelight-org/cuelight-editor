@@ -29,6 +29,7 @@ use cuelight_editor_core::session::Session;
 use cuelight_editor_core::watch;
 
 mod assets;
+mod editing;
 mod inputs_panel;
 mod inspector;
 mod library;
@@ -166,8 +167,17 @@ pub struct App {
     /// view stays there.
     scrolled: Option<AbsoluteOffset>,
     /// The show document as written, for the inspector to show a
-    /// layer's own text.
+    /// layer's own text, and as it is edited.
     document: Option<Document>,
+    /// What was typed into the inspector's fields, for the layer they
+    /// were typed for, until it is applied.
+    typed: Option<(LayerPath, Vec<(Property, String)>)>,
+    /// An edit waiting for a yes, because a timeline or binding owns the
+    /// property at the playhead.
+    owned: Option<editing::Owned>,
+    /// The base value of each editable property of the picked layer, as
+    /// its field shows it. Kept here because a field borrows it.
+    bases: Vec<(Property, String)>,
     /// Whether the system asks for a light or a dark theme: iced draws
     /// the window in the theme it picks for it, and the inspector's
     /// colours are taken from the same one.
@@ -260,6 +270,16 @@ pub enum Message {
     Picked(Option<Picked>),
     /// Write the show back where it came from; in a browser, download it.
     Save,
+    /// Text typed into a property's field in the inspector.
+    Type(Property, String),
+    /// Enter in a property's field: set its base value to what was typed.
+    Apply(Property),
+    /// Set the base anyway, though a timeline or binding owns it now.
+    EditOwned,
+    /// Leave the property as it was.
+    KeepOwned,
+    Undo,
+    Redo,
     /// Files of the show's folder changed on disk, by the editor or not.
     #[cfg(not(target_arch = "wasm32"))]
     DiskChanged(Vec<std::path::PathBuf>),
@@ -391,6 +411,9 @@ impl App {
             zoom: Zoom::Fit,
             scrolled: None,
             document: None,
+            typed: None,
+            owned: None,
+            bases: Vec::new(),
             mode: iced::theme::Mode::None,
             scale_factor: 1.0,
             fitted: Cell::new(1.0),
@@ -460,6 +483,7 @@ impl App {
         }
         let task = self.handle(message);
         self.refresh_fields();
+        self.refresh_bases();
         task
     }
 
@@ -496,6 +520,18 @@ impl App {
                 Task::perform(dialog::pick_folder(), Message::Picked)
             }
             Message::Save => self.save(),
+            Message::Type(property, text) => {
+                self.type_into(property, text);
+                Task::none()
+            }
+            Message::Apply(property) => self.apply(property),
+            Message::EditOwned => self.edit_owned(),
+            Message::KeepOwned => {
+                self.owned = None;
+                Task::none()
+            }
+            Message::Undo => self.undo(false),
+            Message::Redo => self.undo(true),
             #[cfg(not(target_arch = "wasm32"))]
             Message::DiskChanged(paths) => self.disk_changed(&paths),
             #[cfg(not(target_arch = "wasm32"))]
@@ -596,6 +632,11 @@ impl App {
                 }
                 match name.as_str() {
                     "s" if modifiers.control() => self.update(Message::Save),
+                    "z" | "Z" if modifiers.control() && modifiers.shift() => {
+                        self.update(Message::Redo)
+                    }
+                    "z" if modifiers.control() => self.update(Message::Undo),
+                    "y" if modifiers.control() => self.update(Message::Redo),
                     "Escape" => self.update(Message::Deselect),
                     " " => self.update(Message::TogglePause),
                     "r" => self.update(Message::Restart),
@@ -799,6 +840,37 @@ impl App {
         }
     }
 
+    /// Load `text`, the document as it stands, into the playing session
+    /// at the playhead, and bring what the window shows of the show up to
+    /// date. Text that does not load leaves the show as it was.
+    fn reload_text(&mut self, text: &str) -> Result<(), String> {
+        let Some(session) = &mut self.session else {
+            return Ok(());
+        };
+        let findings = session
+            .reload(text, Instant::now())
+            .map_err(|e| format!("the show does not load ({e}); still showing the last version"))?;
+        let findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+        session
+            .log
+            .extend(cuelight_editor_core::log::load(&findings));
+        session.audit(text);
+        let engine = lock(&session.engine);
+        if let Some(show) = engine.show() {
+            self.rows = tree::rows(show);
+            self.inputs = Inputs::of(show);
+        }
+        self.summary = opened::resummarize(&engine, &self.summary, &findings);
+        drop(engine);
+        // What was picked stays picked, where the show still has it.
+        let rows = &self.rows;
+        self.selection.retain(|picked| {
+            rows.iter()
+                .any(|row| matches!(row, Row::Layer { path, .. } if path == picked))
+        });
+        Ok(())
+    }
+
     /// Save the open show where it came from; a browser downloads it.
     fn save(&mut self) -> Task<Message> {
         let (Some(origin), Some(document)) = (&self.origin, &mut self.document) else {
@@ -862,6 +934,8 @@ impl App {
                 self.follow_scene = false;
                 self.selection.clear();
                 self.expanded = None;
+                self.typed = None;
+                self.owned = None;
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
                 self.edits.clear();
                 let task = self.listen(&sounds, sound_files);

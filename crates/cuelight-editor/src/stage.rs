@@ -8,22 +8,26 @@
 //! the texture in between; when the window is sRGB the texture is read
 //! through an sRGB view, so the colours survive the round trip.
 //!
-//! A zoomed-in widget is larger than what its scrollable shows of it:
-//! `render` gets only the visible clip, and draws the slice of the frame
-//! that lies under it. Vello's compute renderer draws targets of at most
+//! A zoomed-in widget is larger than what its scrollable shows of it, so
+//! the frame is only the part in view: [`Seen`] draws the shader over
+//! that part alone, the presenter draws the rectangle of the canvas
+//! under it into a frame its size, and `render` draws the slice of it
+//! under the clip. Vello's compute renderer draws targets of at most
 //! [`MAX_BINS`] bins of [`BIN`] pixels (linebender/vello#680, about
-//! 4096 x 4096 in all), so the frame is not prepared past that and the
-//! window keeps its zoom under it (cuelight#245 asks for a presented
-//! view instead).
+//! 4096 x 4096 in all), which now bounds the view rather than the zoom.
 
+use std::cell::Cell;
 use std::fmt;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use cuelight::Engine;
 use cuelight::render::Presenter;
 use cuelight_core::LayerPath;
-use iced::widget::shader::{self, Action, Viewport};
-use iced::{Event, Rectangle, keyboard, mouse};
+use iced::advanced::widget::{Operation, Tree, tree};
+use iced::advanced::{Layout, Shell, Widget, layout, renderer};
+use iced::widget::shader::{self, Action, Shader, Viewport};
+use iced::{Event, Length, Rectangle, Size, keyboard, mouse};
 
 /// How a click picked: with Alt, the next layer down; with Shift, added
 /// to the selection.
@@ -56,6 +60,110 @@ pub struct Stage<Message> {
     pub on_pick: fn([f64; 2], Pick) -> Message,
     /// The message a Ctrl-click becomes: the show's own press.
     pub on_press: fn([f64; 2]) -> Message,
+    /// The widget's whole box, as [`Seen`] last drew it.
+    pub whole: Rc<Cell<Option<Rectangle>>>,
+}
+
+impl<Message> Stage<Message> {
+    /// The widget, `width` by `height`, drawing only the part of it in
+    /// view.
+    pub fn widget(self, width: f32, height: f32) -> Seen<Message> {
+        Seen {
+            whole: self.whole.clone(),
+            shader: Shader::new(self).width(width).height(height),
+        }
+    }
+}
+
+/// The stage's shader widget, drawn over only the part of it in view: a
+/// scrollable draws its content with the rectangle it shows, and a
+/// primitive the size of a zoomed-in show is more than the window's
+/// render pass takes (16384 pixels a side).
+pub struct Seen<Message> {
+    shader: Shader<Message, Stage<Message>>,
+    whole: Rc<Cell<Option<Rectangle>>>,
+}
+
+impl<Message> iced::advanced::widget::Meta for Seen<Message> {}
+
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for Seen<Message>
+where
+    Renderer: iced::advanced::Renderer,
+    Shader<Message, Stage<Message>>: Widget<Message, Theme, Renderer>,
+{
+    fn size(&self) -> Size<Length> {
+        Widget::<Message, Theme, Renderer>::size(&self.shader)
+    }
+
+    fn tag(&self) -> tree::Tag {
+        Widget::<Message, Theme, Renderer>::tag(&self.shader)
+    }
+
+    fn state(&self) -> tree::State {
+        Widget::<Message, Theme, Renderer>::state(&self.shader)
+    }
+
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
+        self.shader.layout(tree, renderer, limits);
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let whole = layout.bounds();
+        let Some(seen) = viewport.intersection(&whole) else {
+            return;
+        };
+        self.whole.set(Some(whole));
+        let seen = Layout::new(seen.size()).move_to(seen.position());
+        self.shader
+            .draw(tree, renderer, theme, style, seen, cursor, viewport);
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.shader
+            .operate(tree, layout, viewport, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.shader
+            .update(tree, event, layout, cursor, renderer, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.shader
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
 }
 
 impl<Message> shader::Program<Message> for Stage<Message> {
@@ -111,12 +219,20 @@ impl<Message> shader::Program<Message> for Stage<Message> {
         &self,
         _state: &keyboard::Modifiers,
         _cursor: mouse::Cursor,
-        _bounds: Rectangle,
+        bounds: Rectangle,
     ) -> Frame {
+        // `bounds` is the part in view; the show fills the whole box.
+        let whole = self.whole.get().unwrap_or(bounds);
         Frame {
             engine: self.engine.clone(),
             revision: self.revision,
             selection: self.selection.clone(),
+            whole: [
+                whole.x - bounds.x,
+                whole.y - bounds.y,
+                whole.width,
+                whole.height,
+            ],
         }
     }
 
@@ -162,6 +278,10 @@ pub struct Frame {
     engine: Arc<Mutex<Engine>>,
     revision: u64,
     selection: Vec<LayerPath>,
+    /// The widget's whole box, `[x, y, width, height]` in logical
+    /// pixels from the top left of the part in view, which is what the
+    /// frame is drawn over.
+    whole: [f32; 4],
 }
 
 impl fmt::Debug for Frame {
@@ -232,17 +352,23 @@ impl shader::Primitive for Frame {
         let Some(renderer) = gpu.renderer.as_mut() else {
             return;
         };
+        // The frame covers the part in view out to whole physical
+        // pixels, so each of its pixels is one of the window's.
         let scale = viewport.scale_factor();
+        let (x0, y0) = ((bounds.x * scale).floor(), (bounds.y * scale).floor());
         let size = [
-            ((bounds.width * scale).round() as u32).max(1),
-            ((bounds.height * scale).round() as u32).max(1),
+            (((bounds.x + bounds.width) * scale).ceil() - x0).max(1.0) as u32,
+            (((bounds.y + bounds.height) * scale).ceil() - y0).max(1.0) as u32,
         ];
-        pipeline.bounds = [
-            bounds.x * scale,
-            bounds.y * scale,
-            size[0] as f32,
-            size[1] as f32,
-        ];
+        pipeline.bounds = [x0, y0, size[0] as f32, size[1] as f32];
+        // The whole widget in physical pixels, from the frame's top left.
+        let [wx, wy, ww, wh] = [
+            (bounds.x + self.whole[0]) * scale - x0,
+            (bounds.y + self.whole[1]) * scale - y0,
+            self.whole[2] * scale,
+            self.whole[3] * scale,
+        ]
+        .map(f64::from);
         if !drawable(size) {
             if pipeline.target.take().is_some() {
                 log::warn!(
@@ -272,9 +398,29 @@ impl shader::Primitive for Frame {
                 Ok(engine) => engine,
                 Err(_) => return,
             };
+            let Some(show) = engine.show() else {
+                return;
+            };
+            // Where the show lands in the whole widget, from the frame's
+            // top left, and so the rectangle of the canvas in view.
+            let (px, py, pw, ph) = cuelight::render::fit(
+                show.size,
+                [ww.round() as u32, wh.round() as u32],
+                engine.scaling(),
+                cuelight::render::Fit::Contain,
+            );
+            let (px, py) = (wx + px, wy + py);
+            let [show_w, show_h] = show.size.map(f64::from);
+            let (sx, sy) = (show_w / pw, show_h / ph);
+            let view = [
+                -px * sx,
+                -py * sy,
+                f64::from(size[0]) * sx,
+                f64::from(size[1]) * sy,
+            ];
             let mut presented = match gpu
                 .presenter
-                .present(&engine, device, queue, renderer, size)
+                .present_view(&engine, device, queue, renderer, size, view)
             {
                 Ok(presented) => presented,
                 Err(error) => {
@@ -282,19 +428,11 @@ impl shader::Primitive for Frame {
                     return;
                 }
             };
-            if !self.selection.is_empty()
-                && let Some(show) = engine.show()
-            {
-                let placement = cuelight::render::fit(
-                    show.size,
-                    size,
-                    engine.scaling(),
-                    cuelight::render::Fit::Contain,
-                );
+            if !self.selection.is_empty() {
                 outline(
                     &mut presented.scene,
                     &boxes(&engine, &self.selection),
-                    placement,
+                    (px, py, pw, ph),
                     show.size,
                 );
             }

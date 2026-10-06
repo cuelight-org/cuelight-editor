@@ -666,28 +666,18 @@ fn the_stage_zooms_and_fits_again() {
 }
 
 #[test]
-fn the_zoom_stops_where_vello_stops_drawing() {
+fn a_large_show_zooms_all_the_way() {
     let (mut app, _) = App::new();
     let dir = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../cuelight-editor-core/tests/fixtures/mini"
     );
     let _ = app.update(Message::Dropped(dir.into()));
-    // A 64 x 32 show zooms all the way.
+    // Only the part in view is drawn, so the show's size no longer
+    // bounds the zoom.
+    app.summary.size = [4000, 4000];
     let _ = app.update(Message::ZoomBy(100.0));
     assert_eq!(app.zoom, Zoom::Scale(Zoom::MAX));
-    // A 4000 x 4000 one on a 2x screen stops near 4096 physical pixels.
-    app.summary.size = [4000, 4000];
-    let _ = app.update(Message::Rescaled(2.0));
-    let _ = app.update(Message::Zoom(Zoom::Scale(1.0)));
-    let Zoom::Scale(scale) = app.zoom else {
-        panic!("a scale");
-    };
-    assert!((0.45..=0.512).contains(&scale), "{scale}");
-    assert!(crate::stage::drawable([
-        (4000.0 * scale * 2.0).round() as u32,
-        (4000.0 * scale * 2.0).round() as u32
-    ]));
 }
 
 #[test]

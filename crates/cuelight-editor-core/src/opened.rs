@@ -264,7 +264,7 @@ fn decode_sounds(
 /// Every file a show on disk ships, by its path within the show: what a
 /// pack holds, what a folder's manifest lists, or the loose document alone.
 #[cfg(not(target_arch = "wasm32"))]
-fn files_on_disk(path: &Path) -> Result<BTreeMap<String, Vec<u8>>, OpenError> {
+pub(crate) fn files_on_disk(path: &Path) -> Result<BTreeMap<String, Vec<u8>>, OpenError> {
     let load = |e: cuelight_loader::LoadError| OpenError::Load(e.to_string());
     if path.is_dir() {
         let manifest = cuelight_loader::Manifest::for_dir(path).map_err(load)?;
@@ -324,6 +324,20 @@ fn check_format(document: &str) -> Result<(), OpenError> {
         });
     }
     Ok(())
+}
+
+/// The summary after the document was loaded again on its own: what the
+/// engine says now, with the assets and driver as they were counted.
+pub fn resummarize(engine: &Engine, before: &Summary, findings: &[String]) -> Summary {
+    let mut summary = summarize(engine);
+    summary.images = before.images;
+    summary.vectors = before.vectors;
+    summary.fonts = before.fonts;
+    summary.sounds = before.sounds;
+    summary.videos = before.videos;
+    summary.driver = before.driver;
+    summary.problems.extend(findings.iter().cloned());
+    summary
 }
 
 fn summarize(engine: &Engine) -> Summary {

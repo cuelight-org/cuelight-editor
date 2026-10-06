@@ -28,6 +28,8 @@ clap = { version = "4", features = ["derive"] }
 png = "0.18"
 # Sound through a device on the desktop.
 cuelight-audio = { workspace = true, features = ["live"] }
+# Watching the open show's files for changes made outside the editor.
+notify-debouncer-mini = "0.7"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Sound through the browser's WebAudio.

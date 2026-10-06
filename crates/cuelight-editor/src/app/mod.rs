@@ -25,6 +25,8 @@ use crate::stage::Pick;
 use cuelight_editor_core::opened::{self, Opened, Summary};
 use cuelight_editor_core::save::{self, Origin};
 use cuelight_editor_core::session::Session;
+#[cfg(not(target_arch = "wasm32"))]
+use cuelight_editor_core::watch;
 
 mod assets;
 mod inputs_panel;
@@ -32,6 +34,8 @@ mod inspector;
 mod library;
 mod sound;
 mod stage;
+#[cfg(not(target_arch = "wasm32"))]
+mod watching;
 
 use assets::{faces, load_fonts, thumbs};
 use inputs_panel::key_name;
@@ -100,6 +104,10 @@ pub struct App {
     /// opened or saved.
     origin: Option<Origin>,
     files: BTreeMap<String, Vec<u8>>,
+    /// The show changed on disk while it had unsaved edits: what is
+    /// there now, until the person says which to keep (desktop only).
+    #[cfg(not(target_arch = "wasm32"))]
+    outside: Option<watch::Change>,
     summary: Summary,
     /// The show's assets, and a thumbnail for each piece of artwork.
     library: Vec<Asset>,
@@ -252,6 +260,16 @@ pub enum Message {
     Picked(Option<Picked>),
     /// Write the show back where it came from; in a browser, download it.
     Save,
+    /// Files of the show's folder changed on disk, by the editor or not.
+    #[cfg(not(target_arch = "wasm32"))]
+    DiskChanged(Vec<std::path::PathBuf>),
+    /// The show changed on disk while it had unsaved edits: keep the
+    /// edits (the next save writes over the change), or load the show
+    /// from disk (the edits are dropped).
+    #[cfg(not(target_arch = "wasm32"))]
+    KeepEdits,
+    #[cfg(not(target_arch = "wasm32"))]
+    LoadFromDisk,
     #[cfg(not(target_arch = "wasm32"))]
     Dropped(std::path::PathBuf),
     /// A frame: the instant to move the show to.
@@ -335,6 +353,8 @@ impl App {
             source: String::new(),
             origin: None,
             files: BTreeMap::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            outside: None,
             summary: Summary::default(),
             library: Vec::new(),
             thumbs: Vec::new(),
@@ -476,6 +496,19 @@ impl App {
                 Task::perform(dialog::pick_folder(), Message::Picked)
             }
             Message::Save => self.save(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::DiskChanged(paths) => self.disk_changed(&paths),
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::KeepEdits => {
+                self.outside = None;
+                self.status = "kept your edits; saving writes over the show on disk".to_owned();
+                Task::none()
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::LoadFromDisk => match self.outside.take() {
+                Some(change) => self.reload(change),
+                None => Task::none(),
+            },
             Message::Picked(picked) => {
                 self.asking = false;
                 match picked {
@@ -813,6 +846,10 @@ impl App {
                 } = opened;
                 self.source = source;
                 self.origin = Some(origin);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.outside = None;
+                }
                 self.summary = summary;
                 self.thumbs = thumbs(&engine, &library);
                 self.faces = faces(&engine, &files, &library);
@@ -892,6 +929,14 @@ impl App {
                 _ => None,
             },
         ));
+        // The open show's files on disk, for changes made outside.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((at, under)) = self.origin.as_ref().and_then(watch::watched) {
+            subscriptions.push(
+                Subscription::run_with((at.to_owned(), under), crate::watcher::watch)
+                    .map(Message::DiskChanged),
+            );
+        }
         // A browser does not tell the window about drops: the page listens.
         #[cfg(target_arch = "wasm32")]
         subscriptions
@@ -1011,7 +1056,12 @@ impl App {
             .padding([4, 8])
             .width(Fill);
 
-        column![container(bar).padding(8).width(Fill), body, status].into()
+        // A change on disk that would drop unsaved edits waits for a say.
+        #[cfg(not(target_arch = "wasm32"))]
+        let asking = self.outside_prompt();
+        #[cfg(target_arch = "wasm32")]
+        let asking: Option<Element<'_, Message>> = None;
+        column![container(bar).padding(8).width(Fill), asking, body, status].into()
     }
 }
 

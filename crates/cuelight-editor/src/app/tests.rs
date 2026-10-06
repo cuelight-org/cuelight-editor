@@ -97,6 +97,134 @@ fn an_edited_show_is_saved_with_ctrl_s() {
     assert!(saved.contains("65"));
 }
 
+/// The mini fixture copied into a fresh folder, and the app opened on it.
+fn open_copy() -> (App, tempfile::TempDir) {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cuelight-editor-core/tests/fixtures/mini");
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["show.json", "test-driver.json", "assets/dot.png"] {
+        let to = dir.path().join(name);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(fixture.join(name), to).unwrap();
+    }
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dir.path().into()));
+    (app, dir)
+}
+
+/// Write `show.json` from outside, renaming the show from `from` to
+/// `name`, and say so.
+fn rename_on_disk(app: &mut App, dir: &std::path::Path, from: &str, name: &str) {
+    let show = dir.join("show.json");
+    let text = std::fs::read_to_string(&show).unwrap().replace(
+        &format!("\"name\": \"{from}\""),
+        &format!("\"name\": \"{name}\""),
+    );
+    std::fs::write(&show, text).unwrap();
+    let _ = app.update(Message::DiskChanged(vec![show]));
+}
+
+#[test]
+fn a_show_changed_on_disk_reloads_at_the_playhead() {
+    let (mut app, dir) = open_copy();
+    let _ = app.update(Message::Seek(0.4));
+    rename_on_disk(&mut app, dir.path(), "mini", "outside");
+    assert_eq!(app.status, "reloaded show.json from disk");
+    assert_eq!(app.summary.name, "outside");
+    assert!((app.session.as_ref().unwrap().time - 0.4).abs() < 1e-9);
+    assert!(
+        app.document
+            .as_ref()
+            .unwrap()
+            .text()
+            .contains("\"outside\"")
+    );
+
+    // A new asset opens the show again, and still at the playhead.
+    std::fs::copy(
+        dir.path().join("assets/dot.png"),
+        dir.path().join("assets/dot2.png"),
+    )
+    .unwrap();
+    let _ = app.update(Message::DiskChanged(vec![
+        dir.path().join("assets/dot2.png"),
+    ]));
+    assert_eq!(app.status, "reloaded assets/dot2.png from disk");
+    assert!((app.session.as_ref().unwrap().time - 0.4).abs() < 1e-9);
+}
+
+#[test]
+fn the_editors_own_save_reloads_nothing() {
+    let (mut app, dir) = open_copy();
+    let size = cuelight_editor_core::document::Pointer::parse("/size/0").unwrap();
+    app.document
+        .as_mut()
+        .unwrap()
+        .set(&size, serde_json::json!(65))
+        .unwrap();
+    let _ = app.update(Message::Save);
+    let saved = app.status.clone();
+    assert!(saved.starts_with("saved "), "{saved}");
+    let _ = app.update(Message::DiskChanged(vec![dir.path().join("show.json")]));
+    assert_eq!(app.status, saved);
+    assert!(
+        app.document.as_ref().unwrap().can_undo(),
+        "the history stays"
+    );
+}
+
+#[test]
+fn a_change_on_disk_asks_before_dropping_unsaved_edits() {
+    let (mut app, dir) = open_copy();
+    let size = cuelight_editor_core::document::Pointer::parse("/size/0").unwrap();
+    app.document
+        .as_mut()
+        .unwrap()
+        .set(&size, serde_json::json!(65))
+        .unwrap();
+    rename_on_disk(&mut app, dir.path(), "mini", "outside");
+    {
+        let mut ui = simulator(app.view());
+        assert!(ui.find("Load from disk").is_ok());
+    }
+    let _ = app.update(Message::KeepEdits);
+    assert!(app.outside.is_none());
+    assert!(
+        app.document.as_ref().unwrap().is_dirty(),
+        "the edit is kept"
+    );
+    assert_eq!(app.summary.name, "mini");
+
+    rename_on_disk(&mut app, dir.path(), "outside", "again");
+    let _ = app.update(Message::LoadFromDisk);
+    assert_eq!(
+        app.status,
+        "reloaded show.json from disk; the undo history is cleared"
+    );
+    assert_eq!(app.summary.name, "again");
+    assert!(!app.document.as_ref().unwrap().is_dirty());
+}
+
+#[test]
+fn the_watch_reports_a_file_written_in_the_folder() {
+    use iced::futures::StreamExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut changes = Box::pin(crate::watcher::watch(&(dir.path().to_owned(), true)));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let path = dir.path().join("show.json");
+    std::thread::spawn(move || {
+        let _ = sender.send(iced::futures::executor::block_on(changes.next()));
+    });
+    // Give the watch a moment to start before writing.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::fs::write(&path, "{}").unwrap();
+    let paths = receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert!(paths.iter().any(|p| p.ends_with("show.json")), "{paths:?}");
+}
+
 #[test]
 fn the_stage_zooms_and_fits_again() {
     let (mut app, _) = App::new();

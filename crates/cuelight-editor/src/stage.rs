@@ -176,14 +176,42 @@ impl fmt::Debug for Frame {
     }
 }
 
-/// The box round every drawn item of each selected layer, in canvas
-/// units, as `[x0, y0, x1, y1]`; a group's box holds its children's.
-fn boxes(engine: &Engine, selection: &[LayerPath]) -> Vec<[f64; 4]> {
+/// What one selected layer's items add up to: their box in their own
+/// space while they all share one transform, and their box on the
+/// canvas.
+#[derive(Default, Clone)]
+struct Gathered {
+    transform: Option<cuelight::Transform>,
+    shared: bool,
+    own: Option<[f64; 4]>,
+    canvas: Option<[f64; 4]>,
+}
+
+/// Grow a box `[x0, y0, x1, y1]` to hold a point.
+fn grow(bounds: Option<[f64; 4]>, [x, y]: [f64; 2]) -> Option<[f64; 4]> {
+    Some(match bounds {
+        None => [x, y, x, y],
+        Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x), y1.max(y)],
+    })
+}
+
+/// The outline round every drawn item of each selected layer, as four
+/// corners in canvas units. Items that share one transform (a layer
+/// turned or scaled unevenly, its children with it) get their own box
+/// turned with them, so the outline follows the layer; items placed
+/// each their own way get the upright box round them all.
+fn boxes(engine: &Engine, selection: &[LayerPath]) -> Vec<[[f64; 2]; 4]> {
     use cuelight::ResolvedShape;
     let Ok(items) = engine.resolved_layers() else {
         return Vec::new();
     };
-    let mut out: Vec<Option<[f64; 4]>> = vec![None; selection.len()];
+    let mut out: Vec<Gathered> = vec![
+        Gathered {
+            shared: true,
+            ..Gathered::default()
+        };
+        selection.len()
+    ];
     for item in &items {
         let mut points: Vec<[f64; 2]> = Vec::new();
         match &item.shape {
@@ -240,32 +268,53 @@ fn boxes(engine: &Engine, selection: &[LayerPath]) -> Vec<[f64; 4]> {
             if !tree::within(&item.layer, selected) {
                 continue;
             }
+            match slot.transform {
+                None => slot.transform = Some(item.transform),
+                Some(transform) if transform != item.transform => slot.shared = false,
+                Some(_) => {}
+            }
             for point in &points {
-                let [x, y] = item.transform.apply(*point);
-                *slot = Some(match *slot {
-                    None => [x, y, x, y],
-                    Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x), y1.max(y)],
-                });
+                slot.own = grow(slot.own, *point);
+                slot.canvas = grow(slot.canvas, item.transform.apply(*point));
             }
         }
     }
-    out.into_iter().flatten().collect()
+    out.into_iter()
+        .filter_map(|slot| {
+            let corners = |[x0, y0, x1, y1]: [f64; 4]| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+            match (slot.shared, slot.transform, slot.own) {
+                (true, Some(transform), Some(own)) => {
+                    Some(corners(own).map(|p| transform.apply(p)))
+                }
+                _ => slot.canvas.map(corners),
+            }
+        })
+        .collect()
 }
 
 /// Draw the selection's boxes over the presented show.
 fn outline(
     scene: &mut vello::Scene,
-    boxes: &[[f64; 4]],
+    boxes: &[[[f64; 2]; 4]],
     placement: (f64, f64, f64, f64),
     show: [u32; 2],
 ) {
-    use vello::kurbo::{Affine, Rect, Stroke};
+    use vello::kurbo::{Affine, BezPath, Point, Stroke};
     let (x, y, width, height) = placement;
     let (sx, sy) = (width / f64::from(show[0]), height / f64::from(show[1]));
     let color = vello::peniko::Color::from_rgba8(0x5B, 0x8C, 0xFF, 0xFF);
-    for [x0, y0, x1, y1] in boxes {
-        let rect = Rect::new(x + x0 * sx, y + y0 * sy, x + x1 * sx, y + y1 * sy).inflate(1.0, 1.0);
-        scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, color, None, &rect);
+    for corners in boxes {
+        let mut path = BezPath::new();
+        for (i, [cx, cy]) in corners.iter().enumerate() {
+            let point = Point::new(x + cx * sx, y + cy * sy);
+            if i == 0 {
+                path.move_to(point);
+            } else {
+                path.line_to(point);
+            }
+        }
+        path.close_path();
+        scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, color, None, &path);
     }
 }
 
@@ -653,5 +702,55 @@ impl Target {
             storage,
             bind_group,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuelight_core::Root;
+
+    fn engine(layers: &str) -> Engine {
+        let mut engine = Engine::new();
+        engine
+            .load_show(&format!(
+                r#"{{"format": 1, "name": "t", "size": [200, 200], "layers": [{layers}]}}"#
+            ))
+            .unwrap();
+        engine
+    }
+
+    fn close(a: [f64; 2], b: [f64; 2]) -> bool {
+        (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6
+    }
+
+    #[test]
+    fn an_upright_layer_gets_its_box() {
+        let engine = engine(
+            r##"{"name": "r", "type": "shape", "x": 10, "y": 20, "shape": {"rect": [0, 0, 40, 30]}, "fill": "#FFFFFF"}"##,
+        );
+        let [corners] = boxes(&engine, &[LayerPath::new(Root::Show, [0])])[..] else {
+            panic!("one outline");
+        };
+        assert_eq!(
+            corners,
+            [[10.0, 20.0], [50.0, 20.0], [50.0, 50.0], [10.0, 50.0]]
+        );
+    }
+
+    #[test]
+    fn a_turned_layer_gets_its_own_box_turned() {
+        // A 40x20 rect turned a quarter round its corner at (100, 100):
+        // the outline turns with it, rather than standing upright round it.
+        let engine = engine(
+            r##"{"name": "r", "type": "shape", "x": 100, "y": 100, "rotation": 90, "shape": {"rect": [0, 0, 40, 20]}, "fill": "#FFFFFF"}"##,
+        );
+        let [corners] = boxes(&engine, &[LayerPath::new(Root::Show, [0])])[..] else {
+            panic!("one outline");
+        };
+        assert!(close(corners[0], [100.0, 100.0]), "{corners:?}");
+        assert!(close(corners[1], [100.0, 140.0]), "{corners:?}");
+        assert!(close(corners[2], [80.0, 140.0]), "{corners:?}");
+        assert!(close(corners[3], [80.0, 100.0]), "{corners:?}");
     }
 }

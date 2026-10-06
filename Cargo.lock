@@ -800,7 +800,7 @@ dependencies = [
 [[package]]
 name = "cuelight"
 version = "0.0.1"
-source = "git+https://github.com/cuelight-org/cuelight?rev=d9b332e882000ae896623b2e591aac9cc278aa5e#d9b332e882000ae896623b2e591aac9cc278aa5e"
+source = "git+https://github.com/cuelight-org/cuelight?rev=5553103fcf397f097f26ef2cf85699a55bcd7f8e#5553103fcf397f097f26ef2cf85699a55bcd7f8e"
 dependencies = [
  "cuelight-core",
  "png",
@@ -813,7 +813,7 @@ dependencies = [
 [[package]]
 name = "cuelight-audio"
 version = "0.0.1"
-source = "git+https://github.com/cuelight-org/cuelight?rev=d9b332e882000ae896623b2e591aac9cc278aa5e#d9b332e882000ae896623b2e591aac9cc278aa5e"
+source = "git+https://github.com/cuelight-org/cuelight?rev=5553103fcf397f097f26ef2cf85699a55bcd7f8e#5553103fcf397f097f26ef2cf85699a55bcd7f8e"
 dependencies = [
  "cpal",
  "cuelight-core",
@@ -829,7 +829,7 @@ dependencies = [
 [[package]]
 name = "cuelight-core"
 version = "0.0.1"
-source = "git+https://github.com/cuelight-org/cuelight?rev=d9b332e882000ae896623b2e591aac9cc278aa5e#d9b332e882000ae896623b2e591aac9cc278aa5e"
+source = "git+https://github.com/cuelight-org/cuelight?rev=5553103fcf397f097f26ef2cf85699a55bcd7f8e#5553103fcf397f097f26ef2cf85699a55bcd7f8e"
 dependencies = [
  "schemars",
  "serde",
@@ -884,7 +884,7 @@ dependencies = [
 [[package]]
 name = "cuelight-loader"
 version = "0.0.1"
-source = "git+https://github.com/cuelight-org/cuelight?rev=d9b332e882000ae896623b2e591aac9cc278aa5e#d9b332e882000ae896623b2e591aac9cc278aa5e"
+source = "git+https://github.com/cuelight-org/cuelight?rev=5553103fcf397f097f26ef2cf85699a55bcd7f8e#5553103fcf397f097f26ef2cf85699a55bcd7f8e"
 dependencies = [
  "cuelight",
  "cuelight-core",

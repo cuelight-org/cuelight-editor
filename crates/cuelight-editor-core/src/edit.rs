@@ -139,6 +139,70 @@ pub fn set(
     document.insert(&at, value)
 }
 
+/// Whether `value` is what the layer `layer` (its JSON) has for
+/// `property` when it does not write it: the engine is asked, with the
+/// key taken out. A key the layer cannot do without has no default.
+pub fn is_default(layer: &Value, property: Property, value: &Value) -> bool {
+    if matches!(property, Property::TileX | Property::TileY) {
+        return value.as_f64() == Some(0.0);
+    }
+    let Some(name) = serde_json::to_value(property)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+    else {
+        return false;
+    };
+    let mut without = layer.clone();
+    if let Some(object) = without.as_object_mut() {
+        object.remove(&name);
+    }
+    let Ok(read) = serde_json::from_value::<cuelight_core::Layer>(without) else {
+        return false;
+    };
+    let default = match read.base_value(property) {
+        Some(cuelight_core::Value::Number(n)) => Value::from(n),
+        Some(cuelight_core::Value::Bool(b)) => Value::Bool(b),
+        Some(cuelight_core::Value::Text(t)) => Value::String(t),
+        _ => return false,
+    };
+    same(&default, value)
+}
+
+/// Two JSON values that mean the same: `1` and `1.0`, `#ffb000` and
+/// `#FFB000`.
+pub fn same(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
+        (Value::String(x), Value::String(y)) => x.eq_ignore_ascii_case(y),
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same(x, y))
+        }
+        _ => a == b,
+    }
+}
+
+/// Whether the layer at `layer` writes `property`, rather than leaving
+/// it to its default.
+pub fn written(document: &Document, layer: &Pointer, property: Property) -> bool {
+    pointer(layer, property).is_some_and(|at| document.get(&at).is_some())
+}
+
+/// Take `property` out of the layer at `layer`, back to its default. A
+/// pattern offset goes back to 0, as the pair it sits in has two.
+pub fn unset(
+    document: &mut Document,
+    layer: &Pointer,
+    property: Property,
+) -> Result<(), EditError> {
+    let Some(at) = pointer(layer, property) else {
+        return Err(EditError::NotFound(layer.clone()));
+    };
+    match property {
+        Property::TileX | Property::TileY => document.set(&at, Value::from(0)),
+        _ => document.remove(&at),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +240,29 @@ mod tests {
         assert_eq!(keys, ["name", "type", "x", "shape", "opacity"]);
         assert!(document.undo());
         assert_eq!(document.text(), SHOW);
+    }
+
+    #[test]
+    fn a_property_unset_goes_back_to_its_default() {
+        let mut document = Document::parse(SHOW).unwrap();
+        assert!(written(&document, &dot(), Property::X));
+        assert!(!written(&document, &dot(), Property::Opacity));
+        unset(&mut document, &dot(), Property::X).unwrap();
+        assert!(!written(&document, &dot(), Property::X));
+        assert!(document.undo());
+        assert_eq!(document.text(), SHOW);
+    }
+
+    #[test]
+    fn a_default_is_what_the_engine_reads_without_the_key() {
+        let dot = json!({"name": "dot", "type": "shape", "x": 10, "opacity": 0.5,
+                         "shape": {"circle": [0, 0, 4]}, "fill": "#FFFFFF"});
+        assert!(is_default(&dot, Property::Opacity, &json!(1)));
+        assert!(is_default(&dot, Property::Opacity, &json!(1.0)));
+        assert!(!is_default(&dot, Property::Opacity, &json!(0.5)));
+        assert!(is_default(&dot, Property::X, &json!(0)));
+        assert!(is_default(&dot, Property::Visible, &json!(true)));
+        assert!(is_default(&dot, Property::Scale, &json!(1)));
     }
 
     #[test]

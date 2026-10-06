@@ -474,6 +474,159 @@ fn a_font_is_picked_from_the_shows_styles() {
 }
 
 #[test]
+fn a_layers_other_fields_are_edited_under_its_properties() {
+    let (mut app, _dir) = open_copy();
+    let floor = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(floor));
+    let labels: Vec<_> = app.layer_fields.iter().map(|f| f.field.label).collect();
+    assert!(
+        labels.contains(&"fill") && labels.contains(&"stroke width"),
+        "{labels:?}"
+    );
+    let blend = app
+        .layer_fields
+        .iter()
+        .find(|f| f.field.label == "blend")
+        .unwrap();
+    assert!(!blend.written, "the floor leaves its blend to the default");
+
+    let floor_json = |app: &App| app.document.as_ref().unwrap().value()["layers"][0].clone();
+    let _ = app.update(Message::PutField("blend", "add".to_owned()));
+    assert_eq!(floor_json(&app)["blend"], "add");
+    let _ = app.update(Message::TypeField("fill", "#00ff00".to_owned()));
+    let _ = app.update(Message::ApplyField("fill"));
+    assert_eq!(floor_json(&app)["fill"], "#00FF00");
+    let _ = app.update(Message::TypeField("stroke width", "2".to_owned()));
+    let _ = app.update(Message::ApplyField("stroke width"));
+    assert_eq!(
+        floor_json(&app)["stroke"],
+        serde_json::json!({"width": 2, "color": "#FFFFFF"})
+    );
+    assert!(app.status.starts_with("stroke width"), "{}", app.status);
+
+    // The dot is an image: its size, as a pair.
+    let dot = LayerPath::new(cuelight_core::Root::Show, [1, 0]);
+    let _ = app.update(Message::Choose(dot));
+    let _ = app.update(Message::TypeField("size", "10, 12".to_owned()));
+    let _ = app.update(Message::ApplyField("size"));
+    assert_eq!(
+        app.document.as_ref().unwrap().value()["layers"][1]["children"][0]["size"],
+        serde_json::json!([10, 12])
+    );
+    let _ = app.update(Message::TypeField("size", "ten".to_owned()));
+    let _ = app.update(Message::ApplyField("size"));
+    assert!(app.status.contains("not"), "{}", app.status);
+}
+
+#[test]
+fn a_default_is_not_written_and_a_written_value_resets() {
+    let (mut app, _dir) = open_copy();
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    let floor = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let doc = |app: &App| app.document.as_ref().unwrap().value();
+
+    // The group writes x: it shows, and the reset takes it out.
+    let _ = app.update(Message::Choose(group.clone()));
+    assert_eq!(app.field(&group, Property::X), Some("32"));
+    let _ = app.update(Message::Reset(Property::X));
+    assert!(doc(&app)["layers"][1].get("x").is_none());
+    assert_eq!(app.field(&group, Property::X), None, "the field is empty");
+    assert_eq!(
+        app.placeholder(Property::X),
+        Some("0"),
+        "the default shows greyed"
+    );
+    assert_eq!(app.status, "x back to its default");
+
+    // A value set back to the default is taken out, not written down.
+    let _ = app.update(Message::Choose(floor.clone()));
+    let _ = app.update(Message::Type(Property::Opacity, "0.5".to_owned()));
+    let _ = app.update(Message::Apply(Property::Opacity));
+    assert_eq!(doc(&app)["layers"][0]["opacity"], 0.5);
+    let _ = app.update(Message::Type(Property::Opacity, "1".to_owned()));
+    let _ = app.update(Message::Apply(Property::Opacity));
+    assert!(doc(&app)["layers"][0].get("opacity").is_none());
+
+    // So is a field emptied with Enter.
+    let _ = app.update(Message::Type(Property::Opacity, "0.5".to_owned()));
+    let _ = app.update(Message::Apply(Property::Opacity));
+    let _ = app.update(Message::Type(Property::Opacity, String::new()));
+    let _ = app.update(Message::Apply(Property::Opacity));
+    assert!(doc(&app)["layers"][0].get("opacity").is_none());
+
+    // And a layer's other field picked back to its default.
+    let _ = app.update(Message::PutField("blend", "add".to_owned()));
+    assert_eq!(doc(&app)["layers"][0]["blend"], "add");
+    let _ = app.update(Message::PutField("blend", "normal".to_owned()));
+    assert!(doc(&app)["layers"][0].get("blend").is_none());
+}
+
+#[test]
+fn a_drag_that_ends_on_the_default_leaves_it_out() {
+    let (mut app, _dir) = open_copy();
+    let floor = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(floor));
+    let _ = app.update(Message::ScrubStart(Property::Opacity));
+    for x in [200.0, 170.0] {
+        let _ = app.update(Message::ScrubMove(x));
+        let _ = app.update(Message::ScrubApply);
+    }
+    let _ = app.update(Message::ScrubMove(200.0));
+    let _ = app.update(Message::ScrubEnd);
+    let document = app.document.as_ref().unwrap();
+    assert!(document.value()["layers"][0].get("opacity").is_none());
+    assert!(!document.is_dirty(), "back where it started");
+}
+
+#[test]
+fn moving_on_from_a_field_applies_it_unless_it_does_not_read() {
+    let (mut app, _dir) = open_copy();
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    let doc = |app: &App| app.document.as_ref().unwrap().value();
+    let _ = app.update(Message::Choose(group.clone()));
+
+    // Typing into y applies the x typed before it.
+    let _ = app.update(Message::Type(Property::X, "40".to_owned()));
+    assert!(app.is_pending(&group, Property::X));
+    let _ = app.update(Message::Type(Property::Y, "20".to_owned()));
+    assert_eq!(doc(&app)["layers"][1]["x"], 40);
+    assert!(!app.is_pending(&group, Property::X));
+    // So does a click anywhere, which is how a field is left without
+    // typing elsewhere.
+    let _ = app.update(Message::Type(Property::Rotation, "15".to_owned()));
+    assert!(app.has_typed());
+    let _ = app.update(Message::Commit);
+    assert_eq!(doc(&app)["layers"][1]["rotation"], 15);
+    assert_eq!(doc(&app)["layers"][1]["y"], 20, "the y waiting too");
+    let _ = app.update(Message::Type(Property::Y, "21".to_owned()));
+    // Picking another layer applies the y.
+    let _ = app.update(Message::Choose(LayerPath::new(
+        cuelight_core::Root::Show,
+        [0],
+    )));
+    assert_eq!(doc(&app)["layers"][1]["y"], 21);
+
+    // What does not read is not applied, stays typed, and says why.
+    let dot = LayerPath::new(cuelight_core::Root::Show, [1, 0]);
+    let _ = app.update(Message::Choose(dot.clone()));
+    let _ = app.update(Message::Type(Property::Tint, "#FFF".to_owned()));
+    let error = app.typing_error(Property::Tint).expect("a reason");
+    assert!(error.contains("not a colour"), "{error}");
+    let _ = app.update(Message::Type(Property::Rotation, "10".to_owned()));
+    assert!(doc(&app)["layers"][1]["children"][0].get("tint").is_none());
+    assert_eq!(
+        app.field(&dot, Property::Tint),
+        Some("#FFF"),
+        "kept as typed"
+    );
+    let mut ui = simulator(app.view());
+    assert!(
+        ui.find(error.as_str()).is_ok(),
+        "the reason is under its row"
+    );
+}
+
+#[test]
 fn the_stage_zooms_and_fits_again() {
     let (mut app, _) = App::new();
     let dir = concat!(
@@ -756,11 +909,9 @@ fn the_inspector_says_where_a_value_comes_from() {
         assert!(ui.find("hop").is_ok(), "the timeline is listed");
     }
     // Once `go` starts the hop, y is the timeline's.
+    // A seek lands exactly 0.1 s into the hop, where a clock would not.
     let _ = app.update(Message::Fire("go".to_owned()));
-    let _ = app.update(Message::TogglePause);
-    let start = Instant::now();
-    let _ = app.update(Message::Tick(start));
-    let _ = app.update(Message::Tick(start + std::time::Duration::from_millis(100)));
+    let _ = app.update(Message::Seek(0.1));
     let _ = app.update(Message::Expand(Some(Property::Y)));
     let mut ui = simulator(app.view());
     assert!(
@@ -948,4 +1099,36 @@ fn without_the_driver_the_show_waits_for_the_hand() {
         app.session.as_ref().unwrap().value("lit"),
         Some(cuelight_core::Value::Bool(true))
     );
+}
+
+#[test]
+fn an_audio_layer_draws_its_inspector() {
+    // The sound row lists the show's sounds while the inspector holds the
+    // engine: the list must not ask for the engine again.
+    let Some(dashboard) = examples().map(|e| e.join("demos/car_dashboard")) else {
+        eprintln!("no cuelight-examples checkout: the audio layer is not tried");
+        return;
+    };
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dashboard));
+    let relay = LayerPath::new(cuelight_core::Root::Show, [5]);
+    let _ = app.update(Message::Choose(relay));
+    let mut ui = simulator(app.view());
+    assert!(ui.find("relay").is_ok());
+    assert!(ui.find("LAYER").is_ok());
+    // A sound is heard or not, at its gain; it has no place or look.
+    assert!(ui.find("gain").is_ok());
+    assert!(ui.find("rotation").is_err());
+    assert!(ui.find("blend").is_err());
+}
+
+/// The examples checkout, beside this repository or where
+/// `CUELIGHT_EXAMPLES` says.
+fn examples() -> Option<std::path::PathBuf> {
+    let dir = std::env::var_os("CUELIGHT_EXAMPLES")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../cuelight-examples")
+        });
+    dir.join("examples.json").exists().then_some(dir)
 }

@@ -24,6 +24,10 @@ web-time = "1"
 
 [dev-dependencies]
 tempfile = "3"
+# The show format's JSON Schema, which the inspector's fields are
+# checked against.
+cuelight-core = { workspace = true, features = ["schema"] }
+schemars = "1"
 
 [lints]
 workspace = true

@@ -225,6 +225,113 @@ fn the_watch_reports_a_file_written_in_the_folder() {
     assert!(paths.iter().any(|p| p.ends_with("show.json")), "{paths:?}");
 }
 
+/// The base value the engine has for a property of the layer at `path`.
+fn base(app: &App, path: &LayerPath, property: Property) -> Option<Value> {
+    let session = app.session.as_ref()?;
+    let engine = lock(&session.engine);
+    engine
+        .explain(path, property)
+        .into_iter()
+        .find_map(|source| match source {
+            cuelight_core::Influence::Base { value } => Some(value),
+            _ => None,
+        })
+}
+
+#[test]
+fn a_number_typed_in_the_inspector_edits_the_show_and_undoes() {
+    let (mut app, _dir) = open_copy();
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    let _ = app.update(Message::Choose(group.clone()));
+    assert_eq!(app.field(&group, Property::X), Some("32"));
+
+    let _ = app.update(Message::Type(Property::X, "40".to_owned()));
+    assert_eq!(
+        app.field(&group, Property::X),
+        Some("40"),
+        "the field shows what is typed"
+    );
+    let _ = app.update(Message::Apply(Property::X));
+    assert_eq!(app.status, "x = 40");
+    assert_eq!(app.document.as_ref().unwrap().value()["layers"][1]["x"], 40);
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(40.0)));
+    assert_eq!(app.title(), "mini* - cuelight editor");
+
+    let _ = app.update(Message::KeyPressed(
+        keyboard::Key::Character("z".into()),
+        keyboard::Modifiers::CTRL,
+    ));
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(32.0)));
+    assert_eq!(
+        app.title(),
+        "mini - cuelight editor",
+        "undone back to the file"
+    );
+    let _ = app.update(Message::KeyPressed(
+        keyboard::Key::Character("Z".into()),
+        keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT,
+    ));
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(40.0)));
+}
+
+#[test]
+fn a_property_the_layer_does_not_write_is_added() {
+    let (mut app, _dir) = open_copy();
+    let floor = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(floor.clone()));
+    let _ = app.update(Message::Type(Property::Opacity, "0.5".to_owned()));
+    let _ = app.update(Message::Apply(Property::Opacity));
+    assert_eq!(
+        app.document.as_ref().unwrap().value()["layers"][0]["opacity"],
+        0.5
+    );
+    assert_eq!(
+        base(&app, &floor, Property::Opacity),
+        Some(Value::Number(0.5))
+    );
+}
+
+#[test]
+fn what_cannot_be_read_changes_nothing() {
+    let (mut app, _dir) = open_copy();
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    let _ = app.update(Message::Choose(group.clone()));
+    let before = app.document.as_ref().unwrap().text();
+    let _ = app.update(Message::Type(Property::X, "forty".to_owned()));
+    let _ = app.update(Message::Apply(Property::X));
+    assert_eq!(app.status, "\"forty\" is not a number");
+    assert_eq!(app.document.as_ref().unwrap().text(), before);
+}
+
+#[test]
+fn a_property_a_binding_owns_asks_before_its_base_changes() {
+    let (mut app, _dir) = open_copy();
+    let dot = LayerPath::new(cuelight_core::Root::Show, [1, 0]);
+    let _ = app.update(Message::Choose(dot.clone()));
+    let _ = app.update(Message::Type(Property::Opacity, "0.3".to_owned()));
+    let _ = app.update(Message::Apply(Property::Opacity));
+    let owned = app.owned.as_ref().expect("a question");
+    assert_eq!(owned.owner, "a binding on lit");
+    assert!(
+        !app.document.as_ref().unwrap().is_dirty(),
+        "nothing changed yet"
+    );
+    {
+        let mut ui = simulator(app.view());
+        assert!(ui.find("Edit base").is_ok());
+    }
+    let _ = app.update(Message::KeepOwned);
+    assert!(app.owned.is_none());
+    assert!(!app.document.as_ref().unwrap().is_dirty());
+
+    let _ = app.update(Message::Apply(Property::Opacity));
+    let _ = app.update(Message::EditOwned);
+    assert_eq!(
+        app.document.as_ref().unwrap().value()["layers"][1]["children"][0]["opacity"],
+        0.3
+    );
+}
+
 #[test]
 fn the_stage_zooms_and_fits_again() {
     let (mut app, _) = App::new();
@@ -500,7 +607,10 @@ fn the_inspector_says_where_a_value_comes_from() {
     {
         let mut ui = simulator(app.view());
         assert!(ui.find("PLACEMENT").is_ok());
-        assert!(ui.find("bound to lit").is_ok(), "opacity is bound");
+        assert!(
+            ui.find("bound to lit: 0.4").is_ok(),
+            "opacity is bound, its base 1 beside what wins"
+        );
         assert!(ui.find("image, group/dot").is_ok());
         assert!(ui.find("hop").is_ok(), "the timeline is listed");
     }
@@ -512,7 +622,10 @@ fn the_inspector_says_where_a_value_comes_from() {
     let _ = app.update(Message::Tick(start + std::time::Duration::from_millis(100)));
     let _ = app.update(Message::Expand(Some(Property::Y)));
     let mut ui = simulator(app.view());
-    assert!(ui.find("timeline hop").is_ok(), "y is owned by the hop");
+    assert!(
+        ui.find("timeline hop: -4.5").is_ok(),
+        "y is owned by the hop"
+    );
     assert!(ui.find("2. base = 0").is_ok(), "the base value is last");
 }
 

@@ -1,6 +1,7 @@
 //! The library area: the layer tree, or the assets.
 
 use cuelight_editor_core::tree::Row;
+use iced::widget::Widget as _;
 use iced::widget::{Column, button, column, container, row, scrollable, space, text};
 use iced::{Element, Fill};
 
@@ -28,13 +29,13 @@ impl App {
         ]
         .width(Fill)
         .height(Fill)
-        .into()
+        .boxed()
     }
 
     /// The layers as a tree: the show's own, then each scene's, groups'
     /// children indented under them; the picked ones marked, the active
     /// scene starred.
-    fn tree_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
+    fn tree_panel<'a>(&'a self, session: &'a Session) -> Column<Element<'a, Message>> {
         let mut panel = Column::new().spacing(2).padding(12);
         let active = session.active_scene();
         for row_ in &self.rows {
@@ -43,7 +44,7 @@ impl App {
                     root: cuelight_core::Root::Show,
                     ..
                 } => {
-                    panel = panel.push(container(text("SHOW").size(12)).padding([6, 0]));
+                    panel = panel.push(container(text("SHOW").size(12)).padding([6, 0]).boxed());
                 }
                 // A scene's heading enters the scene.
                 Row::Root {
@@ -60,7 +61,8 @@ impl App {
                             .on_press(Message::EnterScene(*i))
                             .width(Fill)
                             .padding([6, 0])
-                            .style(button::text),
+                            .style(button::text)
+                            .boxed(),
                     );
                 }
                 Row::Layer {
@@ -84,7 +86,7 @@ impl App {
                     if self.selection.contains(path) {
                         b = b.style(button::secondary);
                     }
-                    panel = panel.push(b);
+                    panel = panel.push(b.boxed());
                 }
             }
         }

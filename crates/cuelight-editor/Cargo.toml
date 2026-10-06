@@ -17,10 +17,10 @@ log.workspace = true
 rfd = "0.17"
 serde_json.workspace = true
 # The stage draws with the engine's renderer. Both must be the wgpu iced
-# draws with (29 today); cargo unifies them, and a mismatch fails the
+# draws with (30 today); cargo unifies them, and a mismatch fails the
 # build rather than the picture.
-vello = "0.10"
-wgpu = { version = "29", default-features = false }
+vello = "0.11"
+wgpu = { version = "30", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"

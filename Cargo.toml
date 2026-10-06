@@ -24,14 +24,14 @@ indexing_slicing = "deny"
 # Every pin in one place. The engine crates move together, and iced with
 # them when wgpu changes (see README).
 [workspace.dependencies]
-cuelight = { git = "https://github.com/cuelight-org/cuelight", rev = "3a5c306eab510d6349042079b155f36da184b00a" }
-cuelight-core = { git = "https://github.com/cuelight-org/cuelight", rev = "3a5c306eab510d6349042079b155f36da184b00a" }
-cuelight-loader = { git = "https://github.com/cuelight-org/cuelight", rev = "3a5c306eab510d6349042079b155f36da184b00a" }
-cuelight-audio = { git = "https://github.com/cuelight-org/cuelight", rev = "3a5c306eab510d6349042079b155f36da184b00a", default-features = false }
-# iced is unreleased on the wgpu the engine uses (29), so it is pinned to
-# a commit of master: the last on wgpu 29 that we checked.
-iced = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2", features = ["image-without-codecs", "svg"] }
-iced_test = { git = "https://github.com/iced-rs/iced", rev = "10e9b995eb5af74dbac08ed62b01971fe7e495b2" }
+cuelight = { git = "https://github.com/cuelight-org/cuelight", rev = "d9b332e882000ae896623b2e591aac9cc278aa5e" }
+cuelight-core = { git = "https://github.com/cuelight-org/cuelight", rev = "d9b332e882000ae896623b2e591aac9cc278aa5e" }
+cuelight-loader = { git = "https://github.com/cuelight-org/cuelight", rev = "d9b332e882000ae896623b2e591aac9cc278aa5e" }
+cuelight-audio = { git = "https://github.com/cuelight-org/cuelight", rev = "d9b332e882000ae896623b2e591aac9cc278aa5e", default-features = false }
+# iced is unreleased on the wgpu the engine uses (30), so it is pinned to
+# a commit of master on wgpu 30 that we checked.
+iced = { git = "https://github.com/iced-rs/iced", rev = "fc0c3ba73dad424e0560dab1f0477aae077c2442", features = ["image-without-codecs", "svg"] }
+iced_test = { git = "https://github.com/iced-rs/iced", rev = "fc0c3ba73dad424e0560dab1f0477aae077c2442" }
 log = "0.4"
 serde_json = { version = "1", features = ["preserve_order"] }
 

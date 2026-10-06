@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use cuelight_editor_core::assets::{self, Asset, Kind};
 use cuelight_editor_core::specimen::{self, Drawn, Sizing};
+use iced::widget::Widget as _;
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::text::Wrapping;
 use iced::widget::{Column, button, column, container, image, row, scrollable, space, svg, text};
@@ -17,17 +18,17 @@ impl App {
     /// The assets by kind, each with its thumbnail, its format and how
     /// often the show uses it; what else there is to know of one is in
     /// the inspector once it is picked.
-    pub(super) fn assets_panel<'a>(&'a self) -> Column<'a, Message> {
+    pub(super) fn assets_panel<'a>(&'a self) -> Column<Element<'a, Message>> {
         const THUMB: f32 = 40.0;
         let mut panel = Column::new().spacing(4).padding(12);
         if self.library.is_empty() {
-            return panel.push(text("This show ships no assets.").size(14));
+            return panel.push(text("This show ships no assets.").size(14).boxed());
         }
         let mut heading: Option<&str> = None;
         for (i, asset) in self.library.iter().enumerate() {
             if heading != Some(asset.kind.heading()) {
                 heading = Some(asset.kind.heading());
-                panel = panel.push(text(asset.kind.heading()).size(12));
+                panel = panel.push(text(asset.kind.heading()).size(12).boxed());
             }
             let thumb: Element<'a, Message> = match self.thumbs.get(i).and_then(Option::as_ref) {
                 Some(Thumb::Image(handle)) => image(handle.clone())
@@ -35,18 +36,18 @@ impl App {
                     .height(THUMB)
                     .content_fit(ContentFit::Contain)
                     .filter_method(image::FilterMethod::Nearest)
-                    .into(),
+                    .boxed(),
                 Some(Thumb::Svg(handle)) => svg(handle.clone())
                     .width(THUMB)
                     .height(THUMB)
                     .content_fit(ContentFit::Contain)
-                    .into(),
+                    .boxed(),
                 None => container(text(kind_mark(asset.kind)).size(16))
                     .width(THUMB)
                     .height(THUMB)
                     .center_x(THUMB)
                     .center_y(THUMB)
-                    .into(),
+                    .boxed(),
             };
             let mut facts = asset.summary();
             let playing = self.preview.as_ref().is_some_and(|p| p.index == i);
@@ -60,7 +61,8 @@ impl App {
                 about = about.push(
                     container(self.face(&faces.sample, specimen::SAMPLE, 1.0, Some(SAMPLE_HEIGHT)))
                         .width(Fill)
-                        .clip(true),
+                        .clip(true)
+                        .boxed(),
                 );
             }
             let line = row![thumb, about].spacing(8).align_y(iced::Center);
@@ -80,9 +82,9 @@ impl App {
                 if self.can_play() {
                     play = play.on_press(Message::Preview(i));
                 }
-                panel = panel.push(row![b, play].spacing(4).align_y(iced::Center));
+                panel = panel.push(row![b, play].spacing(4).align_y(iced::Center).boxed());
             } else {
-                panel = panel.push(b);
+                panel = panel.push(b.boxed());
             }
         }
         panel
@@ -92,7 +94,12 @@ impl App {
 impl App {
     /// The picked artwork, large: fitted to the pane or at its own size,
     /// on the show's background.
-    fn preview<'a>(&'a self, session: &'a Session, i: usize, size: Size) -> Column<'a, Message> {
+    fn preview<'a>(
+        &'a self,
+        session: &'a Session,
+        i: usize,
+        size: Size,
+    ) -> Column<Element<'a, Message>> {
         const PADDING: f32 = 12.0;
         /// What a scrollbar covers, as on the stage: room past the
         /// artwork's bottom edge while it scrolls sideways.
@@ -101,14 +108,14 @@ impl App {
             return Column::new();
         };
         let mut panel = Column::new().spacing(4).padding(PADDING);
-        panel = panel.push(text(&asset.name).size(16));
+        panel = panel.push(text(&asset.name).size(16).boxed());
         let facts = match (asset.kind, asset.size) {
             (Kind::Image, Some([w, h])) => format!("image, {w} x {h} px"),
             (Kind::Vector, Some([w, h])) => format!("vector artwork, {w} x {h}"),
             (Kind::Vector, _) => "vector artwork".to_owned(),
             _ => "image".to_owned(),
         };
-        panel = panel.push(text(facts).size(12));
+        panel = panel.push(text(facts).size(12).boxed());
 
         if let (Some(Some(thumb)), Some([w, h])) = (self.thumbs.get(i), asset.size) {
             let (w, h) = (w.max(1.0) as f32, h.max(1.0) as f32);
@@ -137,7 +144,8 @@ impl App {
                     .spacing(6)
                     .align_y(iced::Center),
                 )
-                .padding([6, 0]),
+                .padding([6, 0])
+                .boxed(),
             );
 
             let art: Element<'a, Message> = match thumb {
@@ -151,12 +159,12 @@ impl App {
                     } else {
                         image::FilterMethod::Linear
                     })
-                    .into(),
+                    .boxed(),
                 Thumb::Svg(handle) => svg(handle.clone())
                     .width(drawn_w)
                     .height(drawn_h)
                     .content_fit(ContentFit::Fill)
-                    .into(),
+                    .boxed(),
             };
             let backdrop = lock(&session.engine)
                 .show()
@@ -168,16 +176,15 @@ impl App {
                 ..container::Style::default()
             });
             panel = panel.push(if drawn_w > room.width {
-                Element::from(
-                    scrollable(container(framed).padding(iced::Padding {
-                        bottom: SCROLLBAR,
-                        ..iced::Padding::ZERO
-                    }))
-                    .direction(Direction::Horizontal(Scrollbar::default()))
-                    .width(Fill),
-                )
+                scrollable(container(framed).padding(iced::Padding {
+                    bottom: SCROLLBAR,
+                    ..iced::Padding::ZERO
+                }))
+                .direction(Direction::Horizontal(Scrollbar::default()))
+                .width(Fill)
+                .boxed()
             } else {
-                framed.into()
+                framed.boxed()
             });
         }
 
@@ -195,7 +202,7 @@ impl App {
         session: &'a Session,
         i: usize,
         size: Size,
-    ) -> Column<'a, Message> {
+    ) -> Column<Element<'a, Message>> {
         let Some(asset) = self.library.get(i) else {
             return Column::new();
         };
@@ -223,27 +230,37 @@ impl App {
         };
         let heading = |label: &'a str| container(text(label).size(12)).padding([6, 0]);
 
-        panel = panel.push(heading("FILE"));
+        panel = panel.push(heading("FILE").boxed());
         match &asset.file {
             Some(file) => {
-                panel = panel.push(text(file).size(13));
+                panel = panel.push(text(file).size(13).boxed());
                 let mut about = asset.format().unwrap_or_default();
                 if let Some(bytes) = asset.bytes {
                     about = format!("{about}, {}", assets::file_size(bytes));
                 }
-                panel = panel.push(text(about).size(12));
+                panel = panel.push(text(about).size(12).boxed());
             }
-            None => panel = panel.push(text("no file: the show came without its folder").size(12)),
+            None => {
+                panel = panel.push(
+                    text("no file: the show came without its folder")
+                        .size(12)
+                        .boxed(),
+                )
+            }
         }
 
-        panel = panel.push(heading("USED BY"));
+        panel = panel.push(heading("USED BY").boxed());
         if asset.uses.is_empty() {
-            panel = panel.push(text("nothing in this show").size(13));
+            panel = panel.push(text("nothing in this show").size(13).boxed());
             if let Some(file) = &asset.file {
                 let prefix = format!("{file}: ");
                 for line in session.log.audit_of(file) {
                     let said = line.text.strip_prefix(&prefix).unwrap_or(&line.text);
-                    panel = panel.push(text(format!("{}: {said}", line.kind.label())).size(12));
+                    panel = panel.push(
+                        text(format!("{}: {said}", line.kind.label()))
+                            .size(12)
+                            .boxed(),
+                    );
                 }
             }
         }
@@ -253,22 +270,26 @@ impl App {
                     .on_press(Message::Choose(used.path.clone()))
                     .width(Fill)
                     .padding([2, 6])
-                    .style(button::text),
+                    .style(button::text)
+                    .boxed(),
             );
         }
 
         if let Some(structure) = &asset.structure {
-            panel = panel.push(container(text("ELEMENTS").size(12)).padding([6, 0]));
+            panel = panel.push(container(text("ELEMENTS").size(12)).padding([6, 0]).boxed());
             panel = panel.push(
                 text(format!(
                     "{} path(s), {} inside no id",
                     structure.paths, structure.loose
                 ))
-                .size(12),
+                .size(12)
+                .boxed(),
             );
             if structure.elements.is_empty() {
                 panel = panel.push(
-                    text("No element carries an id: the artwork moves only as a whole.").size(13),
+                    text("No element carries an id: the artwork moves only as a whole.")
+                        .size(13)
+                        .boxed(),
                 );
             }
             for element in &structure.elements {
@@ -282,25 +303,31 @@ impl App {
                         .spacing(6)
                         .align_y(iced::Center),
                     )
-                    .padding(iced::Padding::ZERO.left(indent)),
+                    .padding(iced::Padding::ZERO.left(indent))
+                    .boxed(),
                 );
                 if !element.parts.is_empty() {
                     panel = panel.push(
                         container(text(format!("part in {}", element.parts.join(", "))).size(12))
-                            .padding(iced::Padding::ZERO.left(indent + 12.0)),
+                            .padding(iced::Padding::ZERO.left(indent + 12.0))
+                            .boxed(),
                     );
                 }
             }
             if !structure.unknown.is_empty() {
-                panel =
-                    panel.push(container(text("PARTS IT DOES NOT HAVE").size(12)).padding([6, 0]));
+                panel = panel.push(
+                    container(text("PARTS IT DOES NOT HAVE").size(12))
+                        .padding([6, 0])
+                        .boxed(),
+                );
                 for (id, place) in &structure.unknown {
                     panel = panel.push(
                         row![
                             text(id).size(13).width(Fill),
                             text(format!("named by {place}")).size(12)
                         ]
-                        .spacing(6),
+                        .spacing(6)
+                        .boxed(),
                     );
                 }
             }
@@ -321,28 +348,32 @@ impl App {
         session: &'a Session,
         asset: &'a Asset,
         faces: &'a Faces,
-    ) -> Column<'a, Message> {
+    ) -> Column<Element<'a, Message>> {
         let engine = lock(&session.engine);
         let mut panel = Column::new().spacing(4).padding(12);
-        panel = panel.push(text(&asset.name).size(16));
+        panel = panel.push(text(&asset.name).size(16).boxed());
         let kind = match faces.sizings.first().and_then(|sizing| sizing.size) {
             None => "bitmap font",
             Some(_) => "outline font",
         };
-        panel = panel.push(text(kind).size(12));
+        panel = panel.push(text(kind).size(12).boxed());
         for (sizing, lines) in faces.sizings.iter().zip(&faces.specimens) {
-            panel = panel.push(space::vertical().height(8));
-            panel = panel.push(text(sizing_name(sizing).to_uppercase()).size(12));
+            panel = panel.push(space::vertical().height(8).boxed());
+            panel = panel.push(text(sizing_name(sizing).to_uppercase()).size(12).boxed());
             if lines
                 .iter()
                 .any(|(_, _, face)| matches!(face, Face::Outline { .. }))
             {
                 // The stage fills outlines through the renderer; here
                 // they are iced's, in the font the file declares.
-                panel = panel.push(text("outlines, drawn by the editor in this font").size(12));
+                panel = panel.push(
+                    text("outlines, drawn by the editor in this font")
+                        .size(12)
+                        .boxed(),
+                );
             }
             if sizing.styles.is_empty() {
-                panel = panel.push(text("no font style uses it").size(12));
+                panel = panel.push(text("no font style uses it").size(12).boxed());
             }
             for name in &sizing.styles {
                 let style = engine.show().and_then(|show| show.fonts.get(name));
@@ -351,7 +382,8 @@ impl App {
                         text(name).size(13),
                         text(style.map(style_name).unwrap_or_default()).size(12)
                     ]
-                    .spacing(8),
+                    .spacing(8)
+                    .boxed(),
                 );
             }
             // Zoomed so a line is some 24 pixels tall, for a font smaller
@@ -368,7 +400,7 @@ impl App {
             let zoom = (24.0 / tall).ceil().min(8.0);
             let zooms: &[f32] = if zoom >= 2.0 { &[1.0, zoom] } else { &[1.0] };
             for &zoom in zooms {
-                let mut block = Column::new().spacing(2);
+                let mut block = Column::<Element<'_, Message>>::new().spacing(2);
                 for (code, line, face) in lines {
                     block = block.push(
                         row![
@@ -376,14 +408,16 @@ impl App {
                             self.face(face, line, zoom, None)
                         ]
                         .spacing(8)
-                        .align_y(iced::Center),
+                        .align_y(iced::Center)
+                        .boxed(),
                     );
                 }
-                panel = panel.push(text(format!("{:.0}%", zoom * 100.0)).size(12));
+                panel = panel.push(text(format!("{:.0}%", zoom * 100.0)).size(12).boxed());
                 panel = panel.push(
                     scrollable(block)
                         .direction(Direction::Horizontal(Scrollbar::default().spacing(4)))
-                        .width(Fill),
+                        .width(Fill)
+                        .boxed(),
                 );
             }
         }
@@ -421,20 +455,20 @@ impl App {
                     } else {
                         image::FilterMethod::Linear
                     })
-                    .into()
+                    .boxed()
             }
             Face::Outline { font, name, size } => {
                 if !self.loaded.contains(name) {
-                    return text("the font is not loaded").size(12).into();
+                    return text("the font is not loaded").size(12).boxed();
                 }
                 let size = max.map_or(size * zoom, |max| (size * zoom).min(max));
                 text(line)
                     .font(*font)
                     .size(size)
                     .wrapping(Wrapping::None)
-                    .into()
+                    .boxed()
             }
-            Face::Nothing => text("none of these characters").size(12).into(),
+            Face::Nothing => text("none of these characters").size(12).boxed(),
         }
     }
 }

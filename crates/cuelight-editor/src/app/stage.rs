@@ -2,7 +2,9 @@
 //! under it, and what a click on it picks.
 
 use cuelight_core::LayerPath;
-use iced::widget::operation::{Animation, scroll_to, snap_to};
+use iced::widget::Widget as _;
+use iced::widget::operation::Animation;
+use iced::widget::operation::scrollable::{scroll_to, snap_to};
 use iced::widget::scrollable::{AbsoluteOffset, Direction, RelativeOffset, Scrollbar};
 use iced::widget::{Column, button, column, container, row, scrollable, shader, space, text};
 use iced::{Element, Fill, Size, Task};
@@ -96,7 +98,7 @@ impl App {
         ]
         .width(Fill)
         .height(Fill)
-        .into()
+        .boxed()
     }
 
     /// The log under the stage: a header saying how many lines, which
@@ -116,13 +118,16 @@ impl App {
         .align_y(iced::Center);
         let mut panel = column![container(header).padding([0, 8]).width(Fill)].spacing(4);
         if self.log_open {
-            let mut lines = Column::new().spacing(1).padding([0, 8]);
+            let mut lines = Column::<Element<'_, Message>>::new()
+                .spacing(1)
+                .padding([0, 8]);
             for line in session.log.lines() {
                 lines = lines.push(
                     text(line.render())
                         .size(12)
                         .font(iced::Font::new("DM Mono"))
-                        .wrapping(text::Wrapping::None),
+                        .wrapping(text::Wrapping::None)
+                        .boxed(),
                 );
             }
             panel = panel.push(
@@ -133,10 +138,11 @@ impl App {
                     })
                     .anchor_bottom()
                     .width(Fill)
-                    .height(HEIGHT),
+                    .height(HEIGHT)
+                    .boxed(),
             );
         }
-        container(panel).padding([4, 0]).width(Fill).into()
+        container(panel).padding([4, 0]).width(Fill).boxed()
     }
 }
 

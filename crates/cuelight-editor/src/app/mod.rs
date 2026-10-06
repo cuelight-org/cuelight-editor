@@ -12,6 +12,7 @@ use cuelight_editor_core::session::{Instant, lock};
 use cuelight_editor_core::specimen::Sizing;
 use cuelight_editor_core::tree::{self, Row};
 use iced::keyboard;
+use iced::widget::Widget as _;
 use iced::widget::pane_grid::{self, Axis, Configuration};
 use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::{
@@ -1065,11 +1066,16 @@ impl App {
         {
             bar = bar.push(
                 button("Open folder...")
-                    .on_press_maybe((!self.asking).then_some(Message::OpenFolder)),
+                    .on_press_maybe((!self.asking).then_some(Message::OpenFolder))
+                    .boxed(),
             );
         }
         let dirty = self.document.as_ref().is_some_and(Document::is_dirty);
-        bar = bar.push(button("Save").on_press_maybe(dirty.then_some(Message::Save)));
+        bar = bar.push(
+            button("Save")
+                .on_press_maybe(dirty.then_some(Message::Save))
+                .boxed(),
+        );
         if let Some(session) = &self.session {
             // The playhead covers one pass of the driver, or as far as
             // the show has played, whichever is longer. Following the
@@ -1087,27 +1093,30 @@ impl App {
             .max(time)
             .max(1.0);
             bar = bar
-                .push(space::horizontal().width(16))
-                .push(button("|<").on_press(Message::Restart))
-                .push(button("<").on_press(Message::Step(-1.0 / 60.0)))
+                .push(space::horizontal().width(16).boxed())
+                .push(button("|<").on_press(Message::Restart).boxed())
+                .push(button("<").on_press(Message::Step(-1.0 / 60.0)).boxed())
                 .push(
                     button(if session.paused { "Play" } else { "Pause" })
-                        .on_press(Message::TogglePause),
+                        .on_press(Message::TogglePause)
+                        .boxed(),
                 )
-                .push(button(">").on_press(Message::Step(1.0 / 60.0)))
+                .push(button(">").on_press(Message::Step(1.0 / 60.0)).boxed())
                 .push(
                     slider(0.0..=end, time, move |t| Message::Seek(from + t))
                         .step(1.0 / 60.0)
-                        .width(Fill),
+                        .width(Fill)
+                        .boxed(),
                 )
-                .push(text(format!("{time:7.2} / {end:.0} s")).size(14))
-                .push(space::horizontal().width(16));
+                .push(text(format!("{time:7.2} / {end:.0} s")).size(14).boxed())
+                .push(space::horizontal().width(16).boxed());
             if scenes {
                 bar = bar.push(
                     toggler(follow)
                         .label("Scene clock")
                         .on_toggle(Message::FollowScene)
-                        .size(16),
+                        .size(16)
+                        .boxed(),
                 );
             }
             if session.has_driver() {
@@ -1115,12 +1124,13 @@ impl App {
                     toggler(session.driving)
                         .label("Driver")
                         .on_toggle(Message::Drive)
-                        .size(16),
+                        .size(16)
+                        .boxed(),
                 );
             }
             bar = bar
-                .push(space::horizontal().width(16))
-                .push(text(&self.source).size(14));
+                .push(space::horizontal().width(16).boxed())
+                .push(text(&self.source).size(14).boxed());
         }
 
         let body: Element<'_, Message> = match &self.session {
@@ -1132,19 +1142,18 @@ impl App {
                 })
                 .size(18),
             )
-            .into(),
+            .boxed(),
             Some(session) => iced::widget::pane_grid(&self.panes, move |_, pane, _| {
                 pane_grid::Content::new(match pane {
-                    Pane::Inputs => Element::from(
-                        scrollable(self.inputs_panel(session))
-                            .width(Fill)
-                            .height(Fill),
-                    ),
+                    Pane::Inputs => scrollable(self.inputs_panel(session))
+                        .width(Fill)
+                        .height(Fill)
+                        .boxed(),
                     Pane::Stage => column![
                         responsive(move |size| self.stage(session, size)),
                         self.log_panel(session),
                     ]
-                    .into(),
+                    .boxed(),
                     Pane::Library => self.library_panel(session),
                     // The preview of an asset fits the pane, so the pane
                     // says how large it is.
@@ -1153,7 +1162,7 @@ impl App {
                             .width(Fill)
                             .height(Fill)
                     })
-                    .into(),
+                    .boxed(),
                 })
             })
             .on_resize(8, Message::Resized)
@@ -1161,7 +1170,7 @@ impl App {
             .min_size(120)
             .width(Fill)
             .height(Fill)
-            .into(),
+            .boxed(),
         };
 
         let status = container(text(&self.status).size(13))
@@ -1173,7 +1182,7 @@ impl App {
         let asking = self.outside_prompt();
         #[cfg(target_arch = "wasm32")]
         let asking: Option<Element<'_, Message>> = None;
-        column![container(bar).padding(8).width(Fill), asking, body, status].into()
+        column![container(bar).padding(8).width(Fill), asking, body, status].boxed()
     }
 }
 

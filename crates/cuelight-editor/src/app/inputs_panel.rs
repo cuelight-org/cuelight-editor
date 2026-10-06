@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use cuelight_editor_core::inputs::{self, Place};
 use iced::keyboard;
+use iced::widget::Widget as _;
 use iced::widget::{Column, button, row, text, text_input, toggler};
 use iced::{Element, Fill};
 
@@ -13,13 +14,14 @@ use cuelight_editor_core::session::Session;
 impl App {
     /// The show's inputs: triggers as buttons, variables as fields, the
     /// show's own values as readouts.
-    pub(super) fn inputs_panel<'a>(&'a self, session: &'a Session) -> Column<'a, Message> {
+    pub(super) fn inputs_panel<'a>(&'a self, session: &'a Session) -> Column<Element<'a, Message>> {
         let mut panel = Column::new().spacing(6).padding(12);
         panel = panel.push(
             toggler(session.recording)
                 .label("Record what I fire")
                 .on_toggle(Message::Record)
-                .size(16),
+                .size(16)
+                .boxed(),
         );
         // Triggers by where they are heard: the ones that open a scene,
         // the ones heard anywhere, then each scene's own, dimmed while
@@ -48,14 +50,14 @@ impl App {
             panel = self.triggers(panel, format!("IN {scene}"), triggers, live);
         }
         if !self.inputs.variables.is_empty() {
-            panel = panel.push(text("VARIABLES").size(12));
+            panel = panel.push(text("VARIABLES").size(12).boxed());
             for (name, initial) in &self.inputs.variables {
                 let current = session.value(name).unwrap_or_else(|| initial.clone());
                 let control: Element<'a, Message> = match current {
                     cuelight_core::Value::Bool(on) => toggler(on)
                         .on_toggle(move |on| Message::Set(name.clone(), on.to_string()))
                         .size(16)
-                        .into(),
+                        .boxed(),
                     _ => {
                         let shown: &'a str =
                             self.fields.get(name).map(String::as_str).unwrap_or("");
@@ -64,21 +66,28 @@ impl App {
                             .on_submit(Message::Set(name.clone(), shown.to_owned()))
                             .size(14)
                             .width(110)
-                            .into()
+                            .boxed()
                     }
                 };
-                panel = panel.push(row![text(name).size(14).width(Fill), control].spacing(8));
+                panel = panel.push(
+                    row![text(name).size(14).width(Fill), control]
+                        .spacing(8)
+                        .boxed(),
+                );
             }
         }
         if !self.inputs.values.is_empty() {
-            panel = panel.push(text("VALUES").size(12));
+            panel = panel.push(text("VALUES").size(12).boxed());
             for name in &self.inputs.values {
                 let shown = session
                     .value(name)
                     .map(|v| inputs::show_value(&v))
                     .unwrap_or_default();
-                panel = panel
-                    .push(row![text(name).size(14).width(Fill), text(shown).size(14)].spacing(8));
+                panel = panel.push(
+                    row![text(name).size(14).width(Fill), text(shown).size(14)]
+                        .spacing(8)
+                        .boxed(),
+                );
             }
         }
         panel
@@ -90,12 +99,12 @@ impl App {
     /// its trigger; a section whose scene is not up is drawn dimmed.
     fn triggers<'a>(
         &'a self,
-        panel: Column<'a, Message>,
+        panel: Column<Element<'a, Message>>,
         heading: String,
         triggers: &[&'a str],
         live: bool,
-    ) -> Column<'a, Message> {
-        let mut panel = panel.push(text(heading).size(12));
+    ) -> Column<Element<'a, Message>> {
+        let mut panel = panel.push(text(heading).size(12).boxed());
         for trigger in triggers {
             let keys: Vec<&str> = self
                 .inputs
@@ -115,7 +124,7 @@ impl App {
             if !live {
                 b = b.style(button::secondary);
             }
-            panel = panel.push(b);
+            panel = panel.push(b.boxed());
         }
         panel
     }

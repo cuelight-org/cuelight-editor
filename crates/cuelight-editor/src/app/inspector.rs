@@ -10,7 +10,8 @@ use cuelight_editor_core::tree;
 use iced::widget::Widget as _;
 use iced::widget::text::Span;
 use iced::widget::{
-    Column, button, column, container, mouse_area, rich_text, row, span, text, text_input,
+    Column, button, column, container, mouse_area, pick_list, rich_text, row, slider, space, span,
+    text, text_input, toggler,
 };
 use iced::{Element, Fill, Size, Theme};
 
@@ -182,25 +183,48 @@ impl App {
                 Influence::Base { value } => Some(inputs::show_value(value)),
                 _ => None,
             });
-            let (field, note): (Element<'a, Message>, String) = match (edit::input(property), base)
-            {
-                (Some(_), Some(base)) => {
+            let input = edit::input(property);
+            let (field, note): (Element<'a, Message>, String) = match (input, base) {
+                (Some(input), Some(base)) => {
                     let shown = self.field(path, property).unwrap_or_default();
                     let note = if base == value {
                         badge
                     } else {
                         format!("{badge}: {value}")
                     };
-                    (
+                    let typed = move || {
                         text_input("", shown)
                             .on_input(move |typed| Message::Type(property, typed))
                             .on_submit(Message::Apply(property))
                             .size(13)
                             .padding([1, 4])
                             .width(Fill)
+                    };
+                    let field = match input {
+                        edit::Input::Toggle => toggler(shown == "true")
+                            .on_toggle(move |on| Message::Put(property, on.to_string()))
+                            .size(14)
                             .boxed(),
-                        note,
-                    )
+                        edit::Input::Choice => match self.choices(show, path, property) {
+                            Some(options) => {
+                                pick_list(Some(shown.to_owned()), options, String::clone)
+                                    .on_select(move |name| Message::Put(property, name))
+                                    .text_size(13)
+                                    .padding([1, 4])
+                                    .width(Fill)
+                                    .boxed()
+                            }
+                            // A layer picking from several is edited in
+                            // its JSON for now.
+                            None => text(value.clone()).size(13).width(Fill).boxed(),
+                        },
+                        edit::Input::Colour => row![swatch(shown), typed()]
+                            .spacing(4)
+                            .align_y(iced::Center)
+                            .boxed(),
+                        edit::Input::Number | edit::Input::Text => typed().boxed(),
+                    };
+                    (field, note)
                 }
                 _ => (text(value).size(13).width(Fill).boxed(), badge),
             };
@@ -210,6 +234,12 @@ impl App {
                     .align_y(iced::Center)
                     .boxed(),
             );
+            if unfolded
+                && input == Some(edit::Input::Colour)
+                && let Some(shown) = self.field(path, property)
+            {
+                panel = panel.push(channels(property, shown));
+            }
             if unfolded {
                 for (rank, source) in sources.iter().enumerate() {
                     panel = panel.push(
@@ -376,6 +406,88 @@ fn json_text<'a>(json: &str, theme: &Theme) -> Element<'a, Message> {
         .size(12)
         .font(iced::Font::new("DM Mono"))
         .boxed()
+}
+
+/// A colour's four channels, `#RRGGBB` or `#RRGGBBAA`; none is white,
+/// which is what an image without a tint looks like.
+fn rgba(hex: &str) -> [u8; 4] {
+    let digits = hex.trim_start_matches('#');
+    let channel = |i: usize| {
+        digits
+            .get(i * 2..i * 2 + 2)
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+    };
+    match digits.len() {
+        6 | 8 => [
+            channel(0).unwrap_or(255),
+            channel(1).unwrap_or(255),
+            channel(2).unwrap_or(255),
+            channel(3).unwrap_or(255),
+        ],
+        _ => [255; 4],
+    }
+}
+
+/// Four channels as the format writes a colour: no alpha when opaque.
+fn hex([r, g, b, a]: [u8; 4]) -> String {
+    if a == 255 {
+        format!("#{r:02X}{g:02X}{b:02X}")
+    } else {
+        format!("#{r:02X}{g:02X}{b:02X}{a:02X}")
+    }
+}
+
+/// A square of the colour, on the pane's own background so its alpha
+/// shows; an empty one for none.
+fn swatch<'a>(colour: &str) -> Element<'a, Message> {
+    let fill = (!colour.is_empty()).then(|| {
+        let [r, g, b, a] = rgba(colour);
+        iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.0)
+    });
+    container(space::horizontal().width(14))
+        .width(18)
+        .height(18)
+        .style(move |theme: &Theme| container::Style {
+            background: fill.map(iced::Background::Color),
+            border: iced::Border {
+                color: theme.palette().background.strong.color,
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .boxed()
+}
+
+/// Sliders for a colour's channels: the field and swatch follow while
+/// dragging, and letting go writes the colour.
+fn channels<'a>(property: Property, colour: &str) -> Element<'a, Message> {
+    let now = rgba(colour);
+    let mut sliders = Column::<Element<'a, Message>>::new()
+        .spacing(2)
+        .padding([2, 18]);
+    for (i, name) in ["R", "G", "B", "A"].into_iter().enumerate() {
+        let value = now.get(i).copied().unwrap_or(255);
+        sliders = sliders.push(
+            row![
+                text(name).size(12).width(14),
+                slider(0.0..=255.0, f32::from(value), move |v: f32| {
+                    let mut next = now;
+                    if let Some(channel) = next.get_mut(i) {
+                        *channel = v.round().clamp(0.0, 255.0) as u8;
+                    }
+                    Message::Type(property, hex(next))
+                })
+                .on_release(Message::Apply(property))
+                .width(Fill),
+                text(value.to_string()).size(12).width(28),
+            ]
+            .spacing(6)
+            .align_y(iced::Center)
+            .boxed(),
+        );
+    }
+    sliders.boxed()
 }
 
 /// A value as it is now, numbers to two places: a timeline or a

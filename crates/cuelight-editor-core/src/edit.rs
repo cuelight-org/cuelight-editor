@@ -7,12 +7,17 @@ use serde_json::Value;
 
 use crate::document::{Document, EditError, Part, Pointer};
 
-/// How a property is typed in the inspector, for the properties that
-/// can be edited there so far.
+/// How a property is typed in the inspector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
     Number,
     Text,
+    /// On or off.
+    Toggle,
+    /// `#RRGGBB` or `#RRGGBBAA`, or empty for none.
+    Colour,
+    /// One of the names the show has: a font style, a sound, a clip.
+    Choice,
 }
 
 /// How `property` is typed, or `None` while the inspector cannot edit
@@ -28,18 +33,35 @@ pub fn input(property: Property) -> Option<Input> {
         | Property::Opacity
         | Property::Reveal
         | Property::Frame
-        | Property::Gain => Some(Input::Number),
+        | Property::Gain
+        | Property::TileX
+        | Property::TileY => Some(Input::Number),
         Property::Text => Some(Input::Text),
-        _ => None,
+        Property::Visible => Some(Input::Toggle),
+        Property::Tint => Some(Input::Colour),
+        Property::Font | Property::Sound | Property::Video => Some(Input::Choice),
     }
 }
 
 /// Where a layer writes `property`, under the layer at `layer`: a key of
-/// the layer's own object, named as the format names the property.
+/// the layer's own object, named as the format names the property, but
+/// for a tiled image's pattern offset, which is `repeat.offset`.
 pub fn pointer(layer: &Pointer, property: Property) -> Option<Pointer> {
     input(property)?;
-    let name = serde_json::to_value(property).ok()?.as_str()?.to_owned();
-    Some(layer.then(Part::Key(name)))
+    let offset = |i| {
+        layer
+            .then(Part::Key("repeat".to_owned()))
+            .then(Part::Key("offset".to_owned()))
+            .then(Part::Index(i))
+    };
+    match property {
+        Property::TileX => Some(offset(0)),
+        Property::TileY => Some(offset(1)),
+        _ => {
+            let name = serde_json::to_value(property).ok()?.as_str()?.to_owned();
+            Some(layer.then(Part::Key(name)))
+        }
+    }
 }
 
 /// What was typed, as the value the document gets: a number written as
@@ -60,8 +82,25 @@ pub fn parse(property: Property, typed: &str) -> Result<Value, String> {
                 Value::from(n)
             })
         }
-        Some(Input::Text) => Ok(Value::String(typed.to_owned())),
-        None => Err("this property cannot be edited here yet".to_owned()),
+        Some(Input::Text | Input::Choice) => Ok(Value::String(typed.to_owned())),
+        Some(Input::Toggle) => match typed.trim() {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            _ => Err(format!("{typed:?} is not true or false")),
+        },
+        Some(Input::Colour) => {
+            let colour = typed.trim();
+            let digits = colour.strip_prefix('#').unwrap_or("x");
+            if colour.is_empty()
+                || ((digits.len() == 6 || digits.len() == 8)
+                    && digits.chars().all(|c| c.is_ascii_hexdigit()))
+            {
+                Ok(Value::String(colour.to_uppercase()))
+            } else {
+                Err(format!("{typed:?} is not a colour: #RRGGBB or #RRGGBBAA"))
+            }
+        }
+        None => Err("this property cannot be edited here".to_owned()),
     }
 }
 
@@ -77,10 +116,27 @@ pub fn set(
         return Err(EditError::NotFound(layer.clone()));
     };
     if document.get(&at).is_some() {
-        document.set(&at, value)
-    } else {
-        document.insert(&at, value)
+        return document.set(&at, value);
     }
+    // A pattern offset the layer does not write yet: the pair, with the
+    // other coordinate at 0. A layer that does not repeat has none.
+    let zero = || Value::from(0);
+    let pair = match property {
+        Property::TileX => Some(vec![value.clone(), zero()]),
+        Property::TileY => Some(vec![zero(), value.clone()]),
+        _ => None,
+    };
+    if let Some(pair) = pair {
+        let repeat = layer.then(Part::Key("repeat".to_owned()));
+        if document.get(&repeat).is_none() {
+            return Err(EditError::NotFound(repeat));
+        }
+        return document.insert(
+            &repeat.then(Part::Key("offset".to_owned())),
+            Value::Array(pair),
+        );
+    }
+    document.insert(&at, value)
 }
 
 #[cfg(test)]
@@ -129,6 +185,39 @@ mod tests {
         assert!(parse(Property::X, "forty").is_err());
         assert!(parse(Property::X, "inf").is_err());
         assert_eq!(parse(Property::Text, "HELLO"), Ok(json!("HELLO")));
-        assert!(parse(Property::Tint, "#FFF").is_err(), "not editable yet");
+    }
+
+    #[test]
+    fn colours_toggles_and_choices_are_read() {
+        assert_eq!(parse(Property::Tint, "#ffb000"), Ok(json!("#FFB000")));
+        assert_eq!(parse(Property::Tint, "#FFB00080"), Ok(json!("#FFB00080")));
+        assert_eq!(parse(Property::Tint, ""), Ok(json!("")), "no tint");
+        assert!(parse(Property::Tint, "#FFF").is_err());
+        assert!(parse(Property::Tint, "orange").is_err());
+        assert_eq!(parse(Property::Visible, "false"), Ok(json!(false)));
+        assert!(parse(Property::Visible, "no").is_err());
+        assert_eq!(parse(Property::Font, "title"), Ok(json!("title")));
+    }
+
+    #[test]
+    fn a_pattern_offset_goes_into_repeat() {
+        let tiled = r#"{"layers": [{"name": "floor", "type": "image", "image": "tile", "repeat": {"size": [8, 8]}}]}"#;
+        let mut document = Document::parse(tiled).unwrap();
+        set(&mut document, &dot(), Property::TileY, json!(3)).unwrap();
+        assert_eq!(
+            document.value()["layers"][0]["repeat"]["offset"],
+            json!([0, 3])
+        );
+        set(&mut document, &dot(), Property::TileX, json!(5)).unwrap();
+        assert_eq!(
+            document.value()["layers"][0]["repeat"]["offset"],
+            json!([5, 3])
+        );
+
+        let mut plain = Document::parse(SHOW).unwrap();
+        assert!(
+            set(&mut plain, &dot(), Property::TileX, json!(1)).is_err(),
+            "no repeat"
+        );
     }
 }

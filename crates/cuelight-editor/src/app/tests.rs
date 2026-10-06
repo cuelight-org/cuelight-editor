@@ -400,6 +400,80 @@ fn a_number_a_binding_owns_is_not_dragged() {
 }
 
 #[test]
+fn a_toggle_and_a_colour_edit_the_base() {
+    let (mut app, _dir) = open_copy();
+    let floor = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(floor.clone()));
+    let _ = app.update(Message::Put(Property::Visible, "false".to_owned()));
+    assert_eq!(
+        app.document.as_ref().unwrap().value()["layers"][0]["visible"],
+        false
+    );
+    assert_eq!(
+        base(&app, &floor, Property::Visible),
+        Some(Value::Bool(false))
+    );
+
+    // The dot is an image: its tint, typed, then moved by a channel.
+    let dot = LayerPath::new(cuelight_core::Root::Show, [1, 0]);
+    let _ = app.update(Message::Choose(dot.clone()));
+    let _ = app.update(Message::Type(Property::Tint, "#ff8000".to_owned()));
+    let _ = app.update(Message::Apply(Property::Tint));
+    let tint = || app_tint(&app);
+    assert_eq!(tint(), "#FF8000");
+    let _ = app.update(Message::Type(Property::Tint, "#FF800080".to_owned()));
+    let _ = app.update(Message::Apply(Property::Tint));
+    assert_eq!(app_tint(&app), "#FF800080");
+    let _ = app.update(Message::Type(Property::Tint, "orange".to_owned()));
+    let _ = app.update(Message::Apply(Property::Tint));
+    assert!(app.status.contains("not a colour"), "{}", app.status);
+    assert_eq!(app_tint(&app), "#FF800080");
+}
+
+fn app_tint(app: &App) -> String {
+    app.document.as_ref().unwrap().value()["layers"][1]["children"][0]["tint"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[test]
+fn a_font_is_picked_from_the_shows_styles() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cuelight-editor-core/tests/fixtures/typed");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(fixture.join("show.json"), dir.path().join("show.json")).unwrap();
+    std::fs::create_dir_all(dir.path().join("assets/fonts")).unwrap();
+    for entry in std::fs::read_dir(fixture.join("assets/fonts")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(
+            entry.path(),
+            dir.path().join("assets/fonts").join(entry.file_name()),
+        )
+        .unwrap();
+    }
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dir.path().into()));
+    let a = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(a.clone()));
+    {
+        let session = app.session.as_ref().unwrap();
+        let engine = lock(&session.engine);
+        let options = app.choices(engine.show().unwrap(), &a, Property::Font);
+        assert_eq!(options, Some(vec!["loud".to_owned(), "plain".to_owned()]));
+    }
+    let _ = app.update(Message::Put(Property::Font, "loud".to_owned()));
+    assert_eq!(
+        app.document.as_ref().unwrap().value()["layers"][0]["font"],
+        "loud"
+    );
+    assert_eq!(
+        base(&app, &a, Property::Font),
+        Some(Value::Text("loud".to_owned()))
+    );
+}
+
+#[test]
 fn the_stage_zooms_and_fits_again() {
     let (mut app, _) = App::new();
     let dir = concat!(

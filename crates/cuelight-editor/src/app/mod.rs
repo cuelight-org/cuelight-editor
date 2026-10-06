@@ -277,6 +277,8 @@ pub enum Message {
     Type(Property, String),
     /// Enter in a property's field: set its base value to what was typed.
     Apply(Property),
+    /// A toggle flipped or a name picked: set the base value to it.
+    Put(Property, String),
     /// Set the base anyway, though a timeline or binding owns it now.
     EditOwned,
     /// Leave the property as it was.
@@ -537,6 +539,7 @@ impl App {
                 Task::none()
             }
             Message::Apply(property) => self.apply(property),
+            Message::Put(property, value) => self.put(property, value),
             Message::EditOwned => self.edit_owned(),
             Message::KeepOwned => {
                 self.owned = None;

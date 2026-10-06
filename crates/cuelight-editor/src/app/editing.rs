@@ -140,6 +140,46 @@ impl App {
         Task::none()
     }
 
+    /// A toggle flipped or a name picked: set it as if typed.
+    pub(super) fn put(&mut self, property: Property, value: String) -> Task<Message> {
+        self.type_into(property, value);
+        self.apply(property)
+    }
+
+    /// What a list offers for `property` of the layer at `path`: the
+    /// show's font styles, or its sounds or clips. `None` while the layer
+    /// picks from several, which the list cannot show.
+    pub(super) fn choices(
+        &self,
+        show: &cuelight_core::Show,
+        path: &LayerPath,
+        property: Property,
+    ) -> Option<Vec<String>> {
+        use cuelight_editor_core::assets::Kind;
+        let kind = match property {
+            Property::Font => return Some(show.fonts.keys().cloned().collect()),
+            Property::Sound => Kind::Sound,
+            Property::Video => Kind::Video,
+            _ => return None,
+        };
+        let at = edit::pointer(&self.layer_pointer(path)?, property)?;
+        if self
+            .document
+            .as_ref()
+            .and_then(|d| d.get(&at))
+            .is_some_and(|node| node.value().is_array())
+        {
+            return None;
+        }
+        Some(
+            self.library
+                .iter()
+                .filter(|asset| asset.kind == kind)
+                .map(|asset| asset.name.clone())
+                .collect(),
+        )
+    }
+
     /// Write `value` as the base of `property` on the layer at `path`
     /// and reload at the playhead; a show that no longer loads takes the
     /// edit back.

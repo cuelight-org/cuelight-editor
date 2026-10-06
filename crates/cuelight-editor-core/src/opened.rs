@@ -19,12 +19,15 @@ pub use cuelight_loader::SoundFile;
 
 use crate::assets::{self, Asset, Names};
 use crate::document::Document;
+use crate::save::Origin;
 
 /// What was opened, where from, and what it contained.
 pub struct Opened {
     /// Where it came from: a path on the desktop, a file name in the
     /// browser.
     pub source: String,
+    /// Where a save writes it back to.
+    pub origin: Origin,
     pub engine: Engine,
     pub summary: Summary,
     /// The driver that came with the show, to play it by.
@@ -137,8 +140,19 @@ impl Opened {
                 .map(|f| format!("artwork asks for font {f:?}, which the show does not ship")),
         );
         let document = document_of(&files)?;
+        let origin = if path.is_dir() {
+            Origin::Folder(path.to_owned())
+        } else if path
+            .extension()
+            .is_some_and(|e| e == cuelight_loader::PACK_EXTENSION)
+        {
+            Origin::Pack(path.to_owned())
+        } else {
+            Origin::Loose(path.to_owned())
+        };
         Ok(Self {
             source: path.display().to_string(),
+            origin,
             engine,
             summary,
             driver: loaded.driver,
@@ -195,6 +209,9 @@ impl Opened {
         let document = document_of(&files)?;
         Ok(Self {
             source: name.to_owned(),
+            origin: Origin::Bytes {
+                name: name.to_owned(),
+            },
             engine,
             summary,
             driver: loaded.driver,

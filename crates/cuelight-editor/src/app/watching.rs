@@ -132,7 +132,7 @@ impl App {
             )
             .padding([4, 8])
             .width(Fill)
-            .into(),
+            .boxed(),
         )
     }
 }

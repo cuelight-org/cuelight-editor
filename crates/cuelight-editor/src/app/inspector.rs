@@ -7,6 +7,7 @@ use cuelight_editor_core::edit;
 use cuelight_editor_core::inputs;
 use cuelight_editor_core::syntax::{self, Token};
 use cuelight_editor_core::tree;
+use iced::widget::Widget as _;
 use iced::widget::text::Span;
 use iced::widget::{
     Column, button, column, container, mouse_area, rich_text, row, span, text, text_input,
@@ -26,7 +27,7 @@ impl App {
         &'a self,
         session: &'a Session,
         size: Size,
-    ) -> Column<'a, Message> {
+    ) -> Column<Element<'a, Message>> {
         if self.tab == Tab::Assets
             && let Some(i) = self.selected
         {
@@ -40,17 +41,18 @@ impl App {
             return summary(&self.summary);
         };
         let Some(layer) = tree::layer(show, path) else {
-            return Column::new().push(text("the picked layer is gone").size(14));
+            return Column::new().push(text("the picked layer is gone").size(14).boxed());
         };
         let mut panel = Column::new().spacing(4).padding(12);
-        panel = panel.push(text(layer.name.clone()).size(16));
+        panel = panel.push(text(layer.name.clone()).size(16).boxed());
         panel = panel.push(
             text(format!(
                 "{}, {}",
                 tree::kind_name(&layer.kind),
                 tree::describe(show, path)
             ))
-            .size(12),
+            .size(12)
+            .boxed(),
         );
         if let LayerKind::Part { id, pivot } = &layer.kind {
             // An element of the artwork above it, moved in the artwork's
@@ -59,10 +61,18 @@ impl App {
                 Some([x, y]) => format!("pivot {x}, {y}"),
                 None => "pivot at the centre of its bounds".to_owned(),
             };
-            panel = panel.push(text(format!("element {id:?} of the artwork, {around}")).size(12));
+            panel = panel.push(
+                text(format!("element {id:?} of the artwork, {around}"))
+                    .size(12)
+                    .boxed(),
+            );
         }
         if self.selection.len() > 1 {
-            panel = panel.push(text(format!("{} picked", self.selection.len())).size(12));
+            panel = panel.push(
+                text(format!("{} picked", self.selection.len()))
+                    .size(12)
+                    .boxed(),
+            );
         }
         if let Some(owned) = self.owned.as_ref().filter(|owned| owned.path == *path) {
             panel = panel.push(
@@ -85,7 +95,7 @@ impl App {
                     .spacing(4),
                 )
                 .padding(6)
-                .style(container::bordered_box),
+                .style(container::bordered_box).boxed(),
             );
         }
 
@@ -115,7 +125,7 @@ impl App {
             };
             if group != heading {
                 heading = group;
-                panel = panel.push(container(text(group).size(12)).padding([6, 0]));
+                panel = panel.push(container(text(group).size(12)).padding([6, 0]).boxed());
             }
             let value = live
                 .iter()
@@ -153,7 +163,7 @@ impl App {
                 )
                 .on_press(Message::ScrubStart(property))
                 .interaction(iced::mouse::Interaction::ResizingHorizontally)
-                .into()
+                .boxed()
             } else {
                 button(text(tree::property_name(property)).size(13))
                     .on_press(Message::Expand((!unfolded).then_some(property)))
@@ -164,7 +174,7 @@ impl App {
                     } else {
                         button::text
                     })
-                    .into()
+                    .boxed()
             };
             // An editable property shows its base, which an edit changes;
             // what wins now, if something else does, goes by the badge.
@@ -188,16 +198,17 @@ impl App {
                             .size(13)
                             .padding([1, 4])
                             .width(Fill)
-                            .into(),
+                            .boxed(),
                         note,
                     )
                 }
-                _ => (text(value).size(13).width(Fill).into(), badge),
+                _ => (text(value).size(13).width(Fill).boxed(), badge),
             };
             panel = panel.push(
                 row![name, field, text(note).size(12)]
                     .spacing(6)
-                    .align_y(iced::Center),
+                    .align_y(iced::Center)
+                    .boxed(),
             );
             if unfolded {
                 for (rank, source) in sources.iter().enumerate() {
@@ -205,14 +216,15 @@ impl App {
                         container(
                             text(format!("{}. {}", rank + 1, describe_source(source))).size(12),
                         )
-                        .padding([0, 18]),
+                        .padding([0, 18])
+                        .boxed(),
                     );
                 }
             }
         }
 
         if !layer.bindings.is_empty() {
-            panel = panel.push(container(text("BINDINGS").size(12)).padding([6, 0]));
+            panel = panel.push(container(text("BINDINGS").size(12)).padding([6, 0]).boxed());
             for binding in &layer.bindings {
                 let mut line = format!(
                     "{} <- {}",
@@ -237,12 +249,16 @@ impl App {
                 if let Some(transition) = &binding.transition {
                     line.push_str(&format!(", over {} s", transition.duration));
                 }
-                panel = panel.push(text(line).size(13));
+                panel = panel.push(text(line).size(13).boxed());
             }
         }
 
         if !layer.timelines.is_empty() {
-            panel = panel.push(container(text("TIMELINES").size(12)).padding([6, 0]));
+            panel = panel.push(
+                container(text("TIMELINES").size(12))
+                    .padding([6, 0])
+                    .boxed(),
+            );
             for (index, timeline) in layer.timelines.iter().enumerate() {
                 let mut starts: Vec<String> =
                     timeline.trigger.iter().map(|t| format!("on {t}")).collect();
@@ -274,7 +290,8 @@ impl App {
                         text(timeline.name.clone()).size(13).width(Fill),
                         text(state).size(12)
                     ]
-                    .spacing(8),
+                    .spacing(8)
+                    .boxed(),
                 );
                 panel = panel.push(
                     container(
@@ -286,18 +303,19 @@ impl App {
                         ))
                         .size(12),
                     )
-                    .padding([0, 12]),
+                    .padding([0, 12])
+                    .boxed(),
                 );
             }
         }
 
-        panel = panel.push(container(text("JSON").size(12)).padding([6, 0]));
+        panel = panel.push(container(text("JSON").size(12)).padding([6, 0]).boxed());
         let json = match self.written(show, path, layer) {
             Some(written) => written,
             None => {
                 // The document does not have the layer where the engine
                 // does: what the engine read, defaults and all.
-                panel = panel.push(text("as the engine read it").size(12));
+                panel = panel.push(text("as the engine read it").size(12).boxed());
                 serde_json::to_string_pretty(layer).unwrap_or_default()
             }
         };
@@ -357,7 +375,7 @@ fn json_text<'a>(json: &str, theme: &Theme) -> Element<'a, Message> {
     rich_text(spans)
         .size(12)
         .font(iced::Font::new("DM Mono"))
-        .into()
+        .boxed()
 }
 
 /// A value as it is now, numbers to two places: a timeline or a
@@ -430,15 +448,23 @@ fn describe_source(influence: &Influence) -> String {
     }
 }
 
-fn summary(summary: &Summary) -> Column<'_, Message> {
+fn summary(summary: &Summary) -> Column<Element<'_, Message>> {
     let mut rows = Column::new().spacing(6).padding(16);
     for (label, value) in opened::lines(summary) {
-        rows = rows.push(column![text(label).size(12), text(value).size(14)].spacing(2));
+        rows = rows.push(
+            column![text(label).size(12), text(value).size(14)]
+                .spacing(2)
+                .boxed(),
+        );
     }
     if !summary.problems.is_empty() {
-        rows = rows.push(text(format!("{} problem(s)", summary.problems.len())).size(14));
+        rows = rows.push(
+            text(format!("{} problem(s)", summary.problems.len()))
+                .size(14)
+                .boxed(),
+        );
         for problem in &summary.problems {
-            rows = rows.push(text(problem).size(13));
+            rows = rows.push(text(problem).size(13).boxed());
         }
     }
     rows

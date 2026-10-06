@@ -22,7 +22,6 @@ use std::sync::{Arc, Mutex};
 use cuelight::Engine;
 use cuelight::render::Presenter;
 use cuelight_core::LayerPath;
-use cuelight_editor_core::tree;
 use iced::widget::shader::{self, Action, Viewport};
 use iced::{Event, Rectangle, keyboard, mouse};
 
@@ -176,118 +175,17 @@ impl fmt::Debug for Frame {
     }
 }
 
-/// What one selected layer's items add up to: their box in their own
-/// space while they all share one transform, and their box on the
-/// canvas.
-#[derive(Default, Clone)]
-struct Gathered {
-    transform: Option<cuelight::Transform>,
-    shared: bool,
-    own: Option<[f64; 4]>,
-    canvas: Option<[f64; 4]>,
-}
-
-/// Grow a box `[x0, y0, x1, y1]` to hold a point.
-fn grow(bounds: Option<[f64; 4]>, [x, y]: [f64; 2]) -> Option<[f64; 4]> {
-    Some(match bounds {
-        None => [x, y, x, y],
-        Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x), y1.max(y)],
-    })
-}
-
-/// The outline round every drawn item of each selected layer, as four
-/// corners in canvas units. Items that share one transform (a layer
-/// turned or scaled unevenly, its children with it) get their own box
-/// turned with them, so the outline follows the layer; items placed
-/// each their own way get the upright box round them all.
+/// The outline round each selected layer, as four corners on the
+/// canvas: the box the engine draws it in and hit-tests presses against
+/// (`Engine::bounds`), turned with the layer when it is turned. A layer
+/// that draws nothing now (hidden, clipped away) has none.
 fn boxes(engine: &Engine, selection: &[LayerPath]) -> Vec<[[f64; 2]; 4]> {
-    use cuelight::ResolvedShape;
-    let Ok(items) = engine.resolved_layers() else {
-        return Vec::new();
-    };
-    let mut out: Vec<Gathered> = vec![
-        Gathered {
-            shared: true,
-            ..Gathered::default()
-        };
-        selection.len()
-    ];
-    for item in &items {
-        let mut points: Vec<[f64; 2]> = Vec::new();
-        match &item.shape {
-            ResolvedShape::Rect {
-                x,
-                y,
-                width,
-                height,
-            }
-            | ResolvedShape::Image {
-                x,
-                y,
-                width,
-                height,
-                ..
-            }
-            | ResolvedShape::Bitmap {
-                x,
-                y,
-                width,
-                height,
-                ..
-            } => {
-                points.extend([
-                    [*x, *y],
-                    [x + width, *y],
-                    [*x, y + height],
-                    [x + width, y + height],
-                ]);
-            }
-            ResolvedShape::Circle { cx, cy, radius } => {
-                points.extend([[cx - radius, cy - radius], [cx + radius, cy + radius]]);
-            }
-            ResolvedShape::Polygon { points: p } => points.extend(p.iter().copied()),
-            ResolvedShape::Path { elements, .. } => {
-                use cuelight_core::PathElement::*;
-                for element in elements {
-                    match element {
-                        MoveTo(p) | LineTo(p) => points.push(*p),
-                        QuadTo(a, b) => points.extend([*a, *b]),
-                        CubicTo(a, b, c) => points.extend([*a, *b, *c]),
-                        Close => {}
-                    }
-                }
-            }
-            ResolvedShape::GlyphRun { size, glyphs, .. } => {
-                for glyph in glyphs {
-                    points.extend([[glyph.x, glyph.y - size], [glyph.x + size, glyph.y]]);
-                }
-            }
-            _ => continue,
-        }
-        for (slot, selected) in out.iter_mut().zip(selection) {
-            if !tree::within(&item.layer, selected) {
-                continue;
-            }
-            match slot.transform {
-                None => slot.transform = Some(item.transform),
-                Some(transform) if transform != item.transform => slot.shared = false,
-                Some(_) => {}
-            }
-            for point in &points {
-                slot.own = grow(slot.own, *point);
-                slot.canvas = grow(slot.canvas, item.transform.apply(*point));
-            }
-        }
-    }
-    out.into_iter()
-        .filter_map(|slot| {
-            let corners = |[x0, y0, x1, y1]: [f64; 4]| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-            match (slot.shared, slot.transform, slot.own) {
-                (true, Some(transform), Some(own)) => {
-                    Some(corners(own).map(|p| transform.apply(p)))
-                }
-                _ => slot.canvas.map(corners),
-            }
+    selection
+        .iter()
+        .filter_map(|path| engine.bounds(path))
+        .map(|bounds| {
+            let [x, y, w, h] = bounds.rect;
+            [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(|p| bounds.transform.apply(p))
         })
         .collect()
 }
@@ -736,6 +634,14 @@ mod tests {
             corners,
             [[10.0, 20.0], [50.0, 20.0], [50.0, 50.0], [10.0, 50.0]]
         );
+    }
+
+    #[test]
+    fn a_hidden_layer_has_no_outline() {
+        let engine = engine(
+            r##"{"name": "r", "type": "shape", "visible": false, "shape": {"rect": [0, 0, 40, 30]}, "fill": "#FFFFFF"}"##,
+        );
+        assert!(boxes(&engine, &[LayerPath::new(Root::Show, [0])]).is_empty());
     }
 
     #[test]

@@ -2173,3 +2173,31 @@ fn text_in_a_show_without_styles_gets_one_for_its_font() {
         "{show}"
     );
 }
+
+#[test]
+fn a_digits_row_is_picked_anywhere_in_its_box() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("show.json"),
+        r##"{"format": 1, "name": "t", "size": [200, 100], "layers": [
+  {"name": "score", "type": "digits", "digits": 2, "size": [80, 50], "x": 60, "y": 25, "text": "88",
+   "display": {"segments": {"style": "numeric7", "fill": "#FFFFFF"}}}
+]}"##,
+    )
+    .unwrap();
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dir.path().into()));
+    // The middle of the first cell's upper half: between its segments.
+    let gap = [79.0, 37.0];
+    let engine = lock(&app.session.as_ref().unwrap().engine);
+    assert!(
+        engine.layers_at(gap).is_empty(),
+        "a press there hits no segment"
+    );
+    drop(engine);
+    let _ = app.update(Message::Pick(gap, crate::stage::Pick::default()));
+    assert_eq!(
+        app.selection,
+        [LayerPath::new(cuelight_core::Root::Show, [0])]
+    );
+}

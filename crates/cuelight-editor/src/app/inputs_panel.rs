@@ -1,8 +1,10 @@
-//! The inputs panel: the show's triggers, variables and values.
+//! The inputs panel: the show's triggers, variables and values, each
+//! with a button to rename it.
 
 use std::collections::BTreeMap;
 
 use cuelight_editor_core::inputs::{self, Place};
+use cuelight_editor_core::renames::Kind;
 use iced::keyboard;
 use iced::widget::Widget as _;
 use iced::widget::{Column, button, row, text, text_input, toggler};
@@ -52,6 +54,10 @@ impl App {
         if !self.inputs.variables.is_empty() {
             panel = panel.push(text("VARIABLES").size(12).boxed());
             for (name, initial) in &self.inputs.variables {
+                if let Some(field) = self.rename_field(Kind::Variable, name) {
+                    panel = panel.push(field);
+                    continue;
+                }
                 let current = session.value(name).unwrap_or_else(|| initial.clone());
                 let control: Element<'a, Message> = match current {
                     cuelight_core::Value::Bool(on) => toggler(on)
@@ -70,23 +76,37 @@ impl App {
                     }
                 };
                 panel = panel.push(
-                    row![text(name).size(14).width(Fill), control]
-                        .spacing(8)
-                        .boxed(),
+                    row![
+                        text(name).size(14).width(Fill),
+                        control,
+                        App::rename_button(Kind::Variable, name),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center)
+                    .boxed(),
                 );
             }
         }
         if !self.inputs.values.is_empty() {
             panel = panel.push(text("VALUES").size(12).boxed());
             for name in &self.inputs.values {
+                if let Some(field) = self.rename_field(Kind::Value, name) {
+                    panel = panel.push(field);
+                    continue;
+                }
                 let shown = session
                     .value(name)
                     .map(|v| inputs::show_value(&v))
                     .unwrap_or_default();
                 panel = panel.push(
-                    row![text(name).size(14).width(Fill), text(shown).size(14)]
-                        .spacing(8)
-                        .boxed(),
+                    row![
+                        text(name).size(14).width(Fill),
+                        text(shown).size(14),
+                        App::rename_button(Kind::Value, name),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center)
+                    .boxed(),
                 );
             }
         }
@@ -106,6 +126,10 @@ impl App {
     ) -> Column<Element<'a, Message>> {
         let mut panel = panel.push(text(heading).size(12).boxed());
         for trigger in triggers {
+            if let Some(field) = self.rename_field(Kind::Trigger, trigger) {
+                panel = panel.push(field);
+                continue;
+            }
             let keys: Vec<&str> = self
                 .inputs
                 .keys
@@ -124,7 +148,12 @@ impl App {
             if !live {
                 b = b.style(button::secondary);
             }
-            panel = panel.push(b.boxed());
+            panel = panel.push(
+                row![b, App::rename_button(Kind::Trigger, trigger)]
+                    .spacing(6)
+                    .align_y(iced::Center)
+                    .boxed(),
+            );
         }
         panel
     }

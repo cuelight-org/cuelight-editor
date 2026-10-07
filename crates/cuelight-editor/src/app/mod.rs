@@ -38,6 +38,7 @@ mod journal;
 mod library;
 mod lists;
 mod manipulate;
+mod renames;
 mod scenes;
 mod solo;
 mod sound;
@@ -260,6 +261,10 @@ pub struct App {
     /// seconds, as typed.
     strip_frames: String,
     strip_seconds: String,
+    /// A trigger, variable or value whose new name is being typed.
+    renaming: Option<renames::Renaming>,
+    /// A rename worked out, waiting for a yes.
+    rename: Option<cuelight_editor_core::renames::Plan>,
 }
 
 /// An area of the window.
@@ -534,6 +539,14 @@ pub enum Message {
     CopyLog,
     /// The bar beside the log moved it to this top line.
     LogScrollTo(f32),
+    /// Start typing a new name for a trigger, a variable or a value.
+    StartRename(cuelight_editor_core::renames::Kind, String),
+    TypeRename(String),
+    /// Enter in the new name: list what the rename changes, and ask.
+    ProposeRename,
+    /// The rename asked about made, or not.
+    ApplyRename,
+    CancelRename,
     /// The window's close button, or the system asking it to close.
     CloseRequested,
     /// The answers to closing with unsaved edits.
@@ -628,6 +641,8 @@ impl App {
             solo: None,
             strip_frames: "8".to_owned(),
             strip_seconds: "1".to_owned(),
+            renaming: None,
+            rename: None,
             fitted: Cell::new(1.0),
             held_json: std::cell::RefCell::new(None),
             log_open: true,
@@ -776,6 +791,7 @@ impl App {
             outside,
             self.journal.offer.is_some(),
             self.solo.is_some(),
+            self.rename.is_some(),
         ]
         .into_iter()
         .filter(|&asked| asked)
@@ -895,6 +911,25 @@ impl App {
                 Task::none()
             }
             Message::ApplyList(list, was) => self.apply_list((list, was)),
+            Message::StartRename(kind, name) => {
+                self.start_rename(kind, name);
+                Task::none()
+            }
+            Message::TypeRename(typed) => {
+                if let Some(renaming) = &mut self.renaming {
+                    renaming.typed = typed;
+                }
+                Task::none()
+            }
+            Message::ProposeRename => {
+                self.propose_typed_rename();
+                Task::none()
+            }
+            Message::ApplyRename => self.apply_rename(),
+            Message::CancelRename => {
+                self.cancel_rename();
+                Task::none()
+            }
             Message::RemoveListRow(list, name) => self.remove_list_row(list, name),
             Message::PutField(label, value) => self.put_field(label, value),
             Message::EditOwned => self.edit_owned(),
@@ -1538,6 +1573,8 @@ impl App {
                 self.grab = None;
                 self.field_typed = None;
                 self.list_typed.clear();
+                self.renaming = None;
+                self.rename = None;
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
                 self.edits.clear();
                 let task = self.listen(&sounds, sound_files);
@@ -1821,6 +1858,8 @@ impl App {
         let asking: Option<Element<'_, Message>> = None;
         // So does a journal with edits the show was not saved with.
         let restore = self.restore_prompt();
+        // And a rename, with what it changes.
+        let renaming = self.rename_prompt();
         // And closing with unsaved edits.
         let closing = self.closing.then(|| {
             question(
@@ -1835,7 +1874,7 @@ impl App {
         // The questions sit in a column of their own, always there: one
         // coming or going leaves the body in its place, so iced keeps its
         // state (the stage's scroll, its view) rather than building it anew.
-        let questions = column![closing, asking, restore];
+        let questions = column![closing, asking, restore, renaming];
         column![
             container(bar).padding(8).width(Fill),
             questions,

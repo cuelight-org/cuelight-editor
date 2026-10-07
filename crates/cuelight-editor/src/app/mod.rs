@@ -22,7 +22,7 @@ use iced::widget::{
 use iced::{Element, Fill, Font, Subscription, Task, Theme};
 
 use crate::dialog::{self, Picked};
-use crate::stage::Pick;
+use crate::stage::{Grip, Held, Pick};
 use cuelight_editor_core::opened::{self, Opened, Summary};
 use cuelight_editor_core::save::{self, Origin};
 use cuelight_editor_core::session::Session;
@@ -35,6 +35,7 @@ mod inputs_panel;
 mod inspector;
 mod library;
 mod lists;
+mod manipulate;
 mod sound;
 mod stage;
 #[cfg(not(target_arch = "wasm32"))]
@@ -195,6 +196,8 @@ pub struct App {
     list_typed: BTreeMap<lists::Row, lists::Draft>,
     /// A number being dragged by its label.
     scrub: Option<editing::Scrub>,
+    /// The selection being dragged on the stage, or one of its handles.
+    grab: Option<manipulate::Grab>,
     /// Whether the system asks for a light or a dark theme: iced draws
     /// the window in the theme it picks for it, and the inspector's
     /// colours are taken from the same one.
@@ -320,6 +323,15 @@ pub enum Message {
     /// A frame while dragging: the number follows the cursor.
     ScrubApply,
     ScrubEnd,
+    /// A drag on the stage began: the selection, or one of its handles,
+    /// taken hold of at a canvas point.
+    Grab(Grip, [f64; 2]),
+    /// Where the drag is on the canvas, and the keys held.
+    Drag([f64; 2], Held),
+    /// A frame while dragging: the selection follows the pointer.
+    DragApply,
+    /// The drag let go.
+    Release,
     /// Files of the show's folder changed on disk, by the editor or not.
     #[cfg(not(target_arch = "wasm32"))]
     DiskChanged(Vec<std::path::PathBuf>),
@@ -464,6 +476,7 @@ impl App {
             bases: Vec::new(),
             written: Vec::new(),
             scrub: None,
+            grab: None,
             layer_fields: Vec::new(),
             field_typed: None,
             list_typed: BTreeMap::new(),
@@ -571,6 +584,7 @@ impl App {
             | Message::Deselect
             | Message::Save
             | Message::ScrubStart(_)
+            | Message::Grab(..)
             | Message::Put(..)
             | Message::PutField(..)
             | Message::RemoveListRow(..)
@@ -632,6 +646,10 @@ impl App {
             Message::ScrubMove(x) => self.scrub_move(x),
             Message::ScrubApply => self.scrub_apply(),
             Message::ScrubEnd => self.scrub_end(),
+            Message::Grab(grip, at) => self.grab(grip, at),
+            Message::Drag(at, held) => self.drag(at, held),
+            Message::DragApply => self.drag_apply(),
+            Message::Release => self.release(),
             Message::Undo => self.undo(false),
             Message::Redo => self.undo(true),
             #[cfg(not(target_arch = "wasm32"))]
@@ -723,6 +741,14 @@ impl App {
             }
             Message::KeyPressed(key, modifiers) => {
                 let name = key_name(&key);
+                // With a layer picked the arrows nudge it, before the show
+                // hears them.
+                if !modifiers.control()
+                    && !self.selection.is_empty()
+                    && let Some(by) = manipulate::nudge_by(&name, modifiers.shift())
+                {
+                    return self.nudge(by);
+                }
                 // The show's keys first; with Ctrl held the editor's own
                 // shortcuts are reached whatever the show maps.
                 if !modifiers.control()
@@ -1046,6 +1072,7 @@ impl App {
                 self.typed = None;
                 self.owned = None;
                 self.scrub = None;
+                self.grab = None;
                 self.field_typed = None;
                 self.list_typed.clear();
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
@@ -1122,6 +1149,10 @@ impl App {
         // comes up.
         if self.scrub.as_ref().is_some_and(|s| s.dragging) {
             subscriptions.push(iced::window::frames().map(|_| Message::ScrubApply));
+        }
+        // The same for a drag on the stage.
+        if self.grab.is_some() {
+            subscriptions.push(iced::window::frames().map(|_| Message::DragApply));
         }
         if self.scrub.is_some() {
             subscriptions.push(iced::event::listen_with(

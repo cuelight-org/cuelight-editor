@@ -6,13 +6,18 @@ use iced::widget::Widget as _;
 use iced::widget::operation::Animation;
 use iced::widget::operation::scrollable::{scroll_to, snap_to};
 use iced::widget::scrollable::{AbsoluteOffset, Direction, RelativeOffset, Scrollbar};
-use iced::widget::{Column, button, column, container, row, scrollable, space, text};
-use iced::{Element, Fill, Size, Task};
+use iced::widget::{
+    button, column, container, row, scrollable, slider, space, text, text_editor, vertical_slider,
+};
+use iced::{Element, Fill, Size, Task, Theme};
 
 use super::{App, Message, Zoom};
 use crate::stage::{Pick, Stage};
 use cuelight_editor_core::session::Session;
 use cuelight_editor_core::tree::{self, Row};
+
+/// How tall the log is, unfolded.
+pub(super) const LOG_HEIGHT: f32 = 160.0;
 
 /// The stage's scroll pane, for the tasks that position it.
 const STAGE: &str = "stage";
@@ -107,14 +112,17 @@ impl App {
     }
 
     /// The log under the stage: a header saying how many lines, which
-    /// folds it to itself; unfolded, the lines follow the newest.
+    /// folds it to itself and copies them all; unfolded, the lines
+    /// follow the newest, and can be selected and copied.
     pub(super) fn log_panel<'a>(&'a self, session: &'a Session) -> Element<'a, Message> {
-        const HEIGHT: f32 = 160.0;
         let count = session.log.len();
         let header = row![
             text("LOG").size(12),
             text(format!("{count} line(s)")).size(12),
             space::horizontal(),
+            button(text("Copy all").size(12))
+                .on_press(Message::CopyLog)
+                .style(button::text),
             button(text(if self.log_open { "fold" } else { "unfold" }).size(12))
                 .on_press(Message::ToggleLog)
                 .style(button::text),
@@ -123,31 +131,95 @@ impl App {
         .align_y(iced::Center);
         let mut panel = column![container(header).padding([0, 8]).width(Fill)].spacing(4);
         if self.log_open {
-            let mut lines = Column::<Element<'_, Message>>::new()
-                .spacing(1)
-                .padding([0, 8]);
-            for line in session.log.lines() {
-                lines = lines.push(
-                    text(line.render())
-                        .size(12)
-                        .font(iced::Font::new("DM Mono"))
-                        .wrapping(text::Wrapping::None)
-                        .boxed(),
+            // Read-only: a selection with the mouse or the keys, and
+            // Ctrl+C, copy from it; typing does nothing. The editor
+            // scrolls itself, which lets a drag run past its edges; the
+            // bar beside it follows that and moves it.
+            let last = self.log_last_top();
+            let editor = text_editor(&self.log_view)
+                .on_action(Message::LogAction)
+                .font(iced::Font::new("DM Mono"))
+                .size(12)
+                .height(LOG_HEIGHT);
+            let mut line = row![editor.boxed()].spacing(4);
+            if last > 0.0 {
+                // A thumb as long as the share of the log in view.
+                let lines = self.log_view.line_count().max(1) as f32;
+                let thumb = (LOG_HEIGHT * (lines - last) / lines).clamp(16.0, LOG_HEIGHT);
+                line = line.push(
+                    vertical_slider(0.0..=last, last - self.log_top, move |v| {
+                        Message::LogScrollTo(last - v)
+                    })
+                    .step(1.0)
+                    .height(LOG_HEIGHT)
+                    .width(10)
+                    // The look of iced's own scrollbars, as the other
+                    // panes have them.
+                    .style(move |theme: &Theme, status| {
+                        let palette = theme.palette();
+                        let mut style = slider::default(theme, status);
+                        let track = iced::Background::Color(palette.background.weak.color);
+                        style.rail.backgrounds = (track, track);
+                        style.rail.width = 10.0;
+                        style.rail.border.radius = 2.0.into();
+                        style.handle.shape = slider::HandleShape::Rectangle {
+                            width: thumb as u16,
+                            border_radius: 2.0.into(),
+                        };
+                        style.handle.background = iced::Background::Color(match status {
+                            slider::Status::Active => palette.background.strongest.color,
+                            _ => palette.primary.strong.color,
+                        });
+                        style.handle.border_width = 0.0;
+                        style
+                    })
+                    .boxed(),
                 );
             }
-            panel = panel.push(
-                scrollable(lines)
-                    .direction(Direction::Both {
-                        vertical: Scrollbar::default(),
-                        horizontal: Scrollbar::default(),
-                    })
-                    .anchor_bottom()
-                    .width(Fill)
-                    .height(HEIGHT)
-                    .boxed(),
-            );
+            panel = panel.push(container(line).padding([0, 8]).boxed());
         }
         container(panel).padding([4, 0]).width(Fill).boxed()
+    }
+
+    /// The log's lines into its view after they changed, the cursor at
+    /// the end so the newest shows. Not while something is selected in
+    /// it: the view waits, and catches up once the selection is gone.
+    pub(super) fn refresh_log(&mut self) {
+        let revision = self.session.as_ref().map(|s| s.log.revision());
+        if revision == self.log_seen || self.log_view.selection().is_some() {
+            return;
+        }
+        self.log_seen = revision;
+        let text = self
+            .session
+            .as_ref()
+            .map(|s| {
+                s.log
+                    .lines()
+                    .map(|l| l.render())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        self.log_view = text_editor::Content::with_text(&text);
+        self.log_view
+            .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+        self.log_top = self.log_last_top();
+    }
+
+    /// The top line the log can be scrolled to: its lines but the ones
+    /// a full view shows. Counted in the log's own lines, so a line that
+    /// wraps makes it a little short.
+    pub(super) fn log_last_top(&self) -> f32 {
+        const LINE: f32 = 12.0 * 1.3;
+        let shown = ((LOG_HEIGHT - 10.0) / LINE).floor();
+        (self.log_view.line_count() as f32 - shown).max(0.0)
+    }
+
+    /// Scroll the log by `lines`, and keep the bar beside it in step.
+    pub(super) fn scroll_log(&mut self, lines: i32) {
+        self.log_view.perform(text_editor::Action::Scroll { lines });
+        self.log_top = (self.log_top + lines as f32).clamp(0.0, self.log_last_top());
     }
 }
 

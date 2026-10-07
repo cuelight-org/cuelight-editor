@@ -2210,3 +2210,66 @@ fn a_digits_row_is_picked_anywhere_in_its_box() {
         [LayerPath::new(cuelight_core::Root::Show, [0])]
     );
 }
+
+#[test]
+fn the_log_is_selected_and_copied_but_not_edited() {
+    use iced::widget::text_editor::{Action, Edit};
+    let (mut app, _) = App::new();
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cuelight-editor-core/tests/fixtures/mini"
+    );
+    let _ = app.update(Message::Dropped(dir.into()));
+    for text in ["first", "second"] {
+        app.session
+            .as_mut()
+            .unwrap()
+            .log
+            .push(cuelight_editor_core::log::Line {
+                kind: cuelight_editor_core::log::Kind::Input,
+                at: None,
+                text: text.to_owned(),
+            });
+    }
+    let _ = app.update(Message::KeepOpen);
+    let lines: Vec<String> = app
+        .session
+        .as_ref()
+        .unwrap()
+        .log
+        .lines()
+        .map(|l| l.render())
+        .collect();
+    assert_eq!(app.log_view.text().trim_end(), lines.join("\n"));
+    // Typing does nothing; a selection does.
+    let _ = app.update(Message::LogAction(Action::Edit(Edit::Insert('x'))));
+    assert_eq!(app.log_view.text().trim_end(), lines.join("\n"));
+    let _ = app.update(Message::LogAction(Action::SelectAll));
+    assert_eq!(
+        app.log_view.selection().map(|s| s.trim_end().to_owned()),
+        Some(lines.join("\n"))
+    );
+    let _ = app.update(Message::CopyLog);
+    assert_eq!(app.status, "copied the log");
+    // A new line waits while something is selected, and shows once the
+    // selection is gone.
+    app.session
+        .as_mut()
+        .unwrap()
+        .log
+        .push(cuelight_editor_core::log::Line {
+            kind: cuelight_editor_core::log::Kind::Input,
+            at: None,
+            text: "a new line".to_owned(),
+        });
+    let _ = app.update(Message::KeepOpen);
+    assert!(
+        !app.log_view.text().contains("a new line"),
+        "the selection is kept"
+    );
+    let _ = app.update(Message::LogAction(Action::Click(
+        iced::Point::new(1.0, 1.0),
+        iced::advanced::mouse::click::Kind::Single,
+    )));
+    assert!(app.log_view.text().contains("a new line"));
+}

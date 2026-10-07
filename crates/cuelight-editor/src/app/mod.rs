@@ -215,6 +215,13 @@ pub struct App {
     /// Light or dark as picked in the top bar, over the system's
     /// preference; `None` follows the system.
     theme_pick: Option<iced::theme::Mode>,
+    /// The log as the panel under the stage shows it: text to select and
+    /// copy from.
+    log_view: iced::widget::text_editor::Content,
+    /// The log's revision the view was made from.
+    log_seen: Option<u64>,
+    /// The log's top line in view, as its own scrolling has left it.
+    log_top: f32,
     /// The window was asked to close with unsaved edits: what to do with
     /// them waits for an answer.
     closing: bool,
@@ -473,6 +480,12 @@ pub enum Message {
     RemoveStyle,
     /// Light or dark picked in the top bar, or back to the system's.
     PickTheme(Option<iced::theme::Mode>),
+    /// A selection or a move in the log; edits are not let through.
+    LogAction(iced::widget::text_editor::Action),
+    /// The whole log to the clipboard.
+    CopyLog,
+    /// The bar beside the log moved it to this top line.
+    LogScrollTo(f32),
     /// The window's close button, or the system asking it to close.
     CloseRequested,
     /// The answers to closing with unsaved edits.
@@ -551,6 +564,9 @@ impl App {
             list_typed: BTreeMap::new(),
             mode: iced::theme::Mode::None,
             theme_pick: None,
+            log_view: iced::widget::text_editor::Content::new(),
+            log_seen: None,
+            log_top: 0.0,
             closing: false,
             path_typed: None,
             held: keyboard::Modifiers::default(),
@@ -624,6 +640,7 @@ impl App {
         self.refresh_fields();
         self.refresh_bases();
         self.refresh_fields_of_layer();
+        self.refresh_log();
         task
     }
 
@@ -1138,6 +1155,36 @@ impl App {
             Message::KeepOpen => {
                 self.closing = false;
                 Task::none()
+            }
+            Message::LogAction(action) => {
+                use iced::widget::text_editor::Action;
+                match action {
+                    _ if action.is_edit() => {}
+                    // A drag past the bottom or the top scrolls on, so a
+                    // selection can run past what the log shows.
+                    Action::Drag(at) => {
+                        // Measured inside the editor's padding, 5 above
+                        // and 5 below.
+                        if at.y > stage::LOG_HEIGHT - 10.0 {
+                            self.scroll_log(1);
+                        } else if at.y < 0.0 {
+                            self.scroll_log(-1);
+                        }
+                        self.log_view.perform(Action::Drag(at));
+                    }
+                    Action::Scroll { lines } => self.scroll_log(lines),
+                    action => self.log_view.perform(action),
+                }
+                Task::none()
+            }
+            Message::LogScrollTo(top) => {
+                let lines = (top - self.log_top).round() as i32;
+                self.scroll_log(lines);
+                Task::none()
+            }
+            Message::CopyLog => {
+                self.status = "copied the log".to_owned();
+                iced::clipboard::write(self.log_view.text()).discard()
             }
             Message::PickTheme(pick) => {
                 self.theme_pick = pick;

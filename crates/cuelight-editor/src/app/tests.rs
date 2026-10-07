@@ -1697,3 +1697,77 @@ fn edits_to_a_show_that_changed_since_say_so() {
     assert_eq!(app.summary.name, "mini", "the edits' own text is back");
     assert!(app.document.as_ref().unwrap().is_dirty());
 }
+
+#[test]
+fn a_font_style_is_picked_under_its_font_and_set_like_a_layer() {
+    let (mut app, _) = App::new();
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cuelight-editor-core/tests/fixtures/typed"
+    );
+    let _ = app.update(Message::Dropped(dir.into()));
+    let _ = app.update(Message::Tab(Tab::Assets));
+    {
+        let mut ui = simulator(app.view());
+        assert!(
+            ui.find("plain").is_ok() && ui.find("loud").is_ok(),
+            "styles under their font"
+        );
+    }
+    let style =
+        |app: &App, name: &str| app.document.as_ref().unwrap().value()["fonts"][name].clone();
+
+    let _ = app.update(Message::PickStyle("plain".into()));
+    assert_eq!(app.field_text("file"), Some("tiny"));
+    let _ = app.update(Message::PutField("color", "#FF0000".into()));
+    assert_eq!(style(&app, "plain")["color"], "#FF0000");
+    let engine = lock(&app.session.as_ref().unwrap().engine);
+    assert_eq!(engine.show().unwrap().fonts["plain"].color, "#FF0000");
+    drop(engine);
+
+    // A border's width alone starts it with a colour, which it needs;
+    // taking the colour out takes the border out.
+    let _ = app.update(Message::PutField("border width", "2".into()));
+    assert_eq!(
+        style(&app, "plain")["border"],
+        serde_json::json!({"width": 2, "color": "#000000"})
+    );
+    let _ = app.update(Message::ResetField("border"));
+    assert!(style(&app, "plain").get("border").is_none());
+
+    // A new style is named after its font and picked.
+    let _ = app.update(Message::AddStyle("tiny".into()));
+    assert_eq!(app.style.as_deref(), Some("tiny"));
+    assert_eq!(style(&app, "tiny")["file"], "tiny");
+    let _ = app.update(Message::AddStyle("tiny".into()));
+    assert_eq!(app.style.as_deref(), Some("tiny_2"));
+
+    // A rename takes the text layers using the style along, as one step;
+    // a name another style has is refused.
+    let users = |app: &App, name: &str| {
+        let text = app.document.as_ref().unwrap().text();
+        text.matches(&format!("\"font\": \"{name}\"")).count()
+    };
+    let using_plain = users(&app, "plain");
+    assert!(using_plain > 0, "the fixture uses plain");
+    let _ = app.update(Message::PickStyle("plain".into()));
+    let _ = app.update(Message::TypeStyleName("loud".into()));
+    let _ = app.update(Message::ApplyStyleName);
+    assert_eq!(app.status, "there is a font style loud already");
+    let _ = app.update(Message::TypeStyleName("body".into()));
+    let _ = app.update(Message::ApplyStyleName);
+    assert_eq!(app.style.as_deref(), Some("body"));
+    assert_eq!(users(&app, "body"), using_plain);
+    assert_eq!(users(&app, "plain"), 0);
+    assert!(style(&app, "plain").is_null());
+    let _ = app.update(Message::Undo);
+    assert_eq!(users(&app, "plain"), using_plain, "one step back");
+    // A style in use stays; one nothing uses goes.
+    let _ = app.update(Message::PickStyle("plain".into()));
+    let _ = app.update(Message::RemoveStyle);
+    assert!(!style(&app, "plain").is_null(), "in use");
+    let _ = app.update(Message::PickStyle("tiny_2".into()));
+    let _ = app.update(Message::RemoveStyle);
+    assert!(style(&app, "tiny_2").is_null());
+    assert_eq!(app.style, None);
+}

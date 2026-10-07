@@ -459,6 +459,46 @@ impl Document {
         Ok(())
     }
 
+    /// Give the key at `path` the name `to`, where it stands among its
+    /// object's keys and with the spacing it was written with.
+    pub fn rename(&mut self, path: &Pointer, to: &str) -> Result<(), EditError> {
+        let (parent, step) = path
+            .split()
+            .ok_or_else(|| EditError::NotAContainer(path.clone()))?;
+        let Part::Key(from) = step else {
+            return Err(EditError::NotAContainer(path.clone()));
+        };
+        let from = from.clone();
+        let target = parent.then(Part::Key(to.to_owned()));
+        if from != to && self.get(&target).is_some() {
+            return Err(EditError::Exists(target));
+        }
+        let container = self
+            .root
+            .get_mut(&parent.0)
+            .ok_or_else(|| EditError::NotFound(parent.clone()))?;
+        let index = container
+            .index_of(&Part::Key(from.clone()))
+            .ok_or_else(|| EditError::NotFound(path.clone()))?;
+        let before = container.clone();
+        let Node::Object { items, .. } = container else {
+            return Err(EditError::NotAContainer(path.clone()));
+        };
+        let item = items
+            .get_mut(index)
+            .ok_or_else(|| EditError::NotFound(path.clone()))?;
+        let was = Value::String(from).to_string();
+        let rest = item.key.strip_prefix(&was).unwrap_or(": ").to_owned();
+        item.key = format!("{}{rest}", Value::String(to.to_owned()));
+        let after = container.clone();
+        self.record(Edit::Set {
+            path: parent,
+            before,
+            after,
+        });
+        Ok(())
+    }
+
     /// Replace the whole document with `text`, as one step: undoing it
     /// gives back the text it replaced. The blank space around the root
     /// stays as it was.
@@ -1062,6 +1102,22 @@ mod tests {
   "scenes": []
 }
 "#;
+
+    #[test]
+    fn a_key_is_renamed_where_it_stands() {
+        let mut document = Document::parse("{\"a\": 1, \"b\": {\"x\": 2}, \"c\": 3}").unwrap();
+        let b = Pointer::parse("/b").unwrap();
+        document.rename(&b, "d").unwrap();
+        assert_eq!(document.text(), "{\"a\": 1, \"d\": {\"x\": 2}, \"c\": 3}");
+        assert!(
+            document
+                .rename(&Pointer::parse("/d").unwrap(), "a")
+                .is_err(),
+            "a taken name"
+        );
+        assert!(document.undo());
+        assert_eq!(document.text(), "{\"a\": 1, \"b\": {\"x\": 2}, \"c\": 3}");
+    }
 
     #[test]
     fn a_show_is_shown_without_its_layers() {

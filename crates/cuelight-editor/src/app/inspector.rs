@@ -31,6 +31,11 @@ impl App {
         size: Size,
     ) -> Column<Element<'a, Message>> {
         if self.tab == Tab::Assets
+            && let Some(style) = &self.style
+        {
+            return self.style_panel(session, style);
+        }
+        if self.tab == Tab::Assets
             && let Some(i) = self.selected
         {
             return self.asset_panel(session, i, size);
@@ -400,7 +405,10 @@ impl App {
 
     /// One of the layer's other fields: its name, an editor fitting it,
     /// and whether the layer writes it or has the engine's default.
-    fn field_row<'a>(&'a self, field: &'a super::editing::LayerField) -> Element<'a, Message> {
+    pub(super) fn field_row<'a>(
+        &'a self,
+        field: &'a super::editing::LayerField,
+    ) -> Element<'a, Message> {
         use cuelight_editor_core::assets::Kind;
         use cuelight_editor_core::fields::Input;
         let label = field.field.label;
@@ -462,6 +470,13 @@ impl App {
                     self.library
                         .iter()
                         .filter(|a| matches!(a.kind, Kind::Image | Kind::Vector))
+                        .map(|a| a.name.clone())
+                        .collect(),
+                ),
+                Input::Font => words(
+                    self.library
+                        .iter()
+                        .filter(|a| a.kind == Kind::Font)
                         .map(|a| a.name.clone())
                         .collect(),
                 ),
@@ -542,7 +557,7 @@ impl App {
 /// JSON in the editor's mono font, coloured by token from the theme's
 /// palette: keys, strings, numbers, literals and punctuation each their
 /// own, whitespace and anything else in the text's colour.
-fn json_text<'a>(json: &str, theme: &Theme) -> Element<'a, Message> {
+pub(super) fn json_text<'a>(json: &str, theme: &Theme) -> Element<'a, Message> {
     let palette = theme.palette();
     let text_l = palette.background.base.text.into_oklch().l;
     let back_l = palette.background.base.color.into_oklch().l;

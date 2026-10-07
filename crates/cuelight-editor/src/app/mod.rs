@@ -39,6 +39,7 @@ mod lists;
 mod manipulate;
 mod sound;
 mod stage;
+mod styles;
 #[cfg(not(target_arch = "wasm32"))]
 mod watching;
 
@@ -89,9 +90,9 @@ fn parse_point(text: &str) -> Result<[f64; 2], String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub static OPTIONS: std::sync::OnceLock<Options> = std::sync::OnceLock::new();
 
-/// What was typed into the field rows, label and text, for the layer it
-/// was typed for (`None` for the show).
-type TypedFields = (Option<LayerPath>, Vec<(&'static str, String)>);
+/// What was typed into the field rows, label and text, and what the
+/// rows were of.
+type TypedFields = (editing::FieldsOf, Vec<(&'static str, String)>);
 
 pub struct App {
     session: Option<Session>,
@@ -131,6 +132,11 @@ pub struct App {
     /// Which asset the library shows the facts of, and the inspector
     /// the preview of.
     selected: Option<usize>,
+    /// The font style picked in the assets, by name: its fields in the
+    /// inspector.
+    style: Option<String>,
+    /// A new name typed for the picked font style, not applied yet.
+    style_name_typed: Option<String>,
     /// The preview draws the artwork at its own size rather than fitted
     /// to the inspector.
     actual_size: bool,
@@ -423,6 +429,15 @@ pub enum Message {
     Resized(pane_grid::ResizeEvent),
     /// The system's light or dark preference, found or changed.
     Mode(iced::theme::Mode),
+    /// A font style picked in the assets, by name.
+    PickStyle(String),
+    /// A new font style in this font file.
+    AddStyle(String),
+    /// A new name typed for the picked font style, and Enter in it.
+    TypeStyleName(String),
+    ApplyStyleName,
+    /// Take the picked font style out, which nothing uses.
+    RemoveStyle,
     /// Light or dark picked in the top bar, or back to the system's.
     PickTheme(Option<iced::theme::Mode>),
     /// The window as drawn, for `--screenshot`.
@@ -453,6 +468,8 @@ impl App {
             loaded: BTreeSet::new(),
             preview: None,
             selected: None,
+            style: None,
+            style_name_typed: None,
             actual_size: false,
             tab: Tab::Layers,
             rows: Vec::new(),
@@ -603,6 +620,8 @@ impl App {
             | Message::Put(..)
             | Message::PutField(..)
             | Message::RemoveListRow(..)
+            | Message::PickStyle(_)
+            | Message::Select(_)
             | Message::Reset(_)
             | Message::ResetField(_) => self.commit_typed(None),
             _ => {}
@@ -907,8 +926,22 @@ impl App {
             }
             Message::Select(index) => {
                 self.selected = index.filter(|i| *i < self.library.len());
+                self.style = None;
                 Task::none()
             }
+            Message::PickStyle(name) => {
+                self.tab = Tab::Assets;
+                self.selected = None;
+                self.style = Some(name);
+                Task::none()
+            }
+            Message::AddStyle(font) => self.add_style(font),
+            Message::TypeStyleName(name) => {
+                self.style_name_typed = Some(name);
+                Task::none()
+            }
+            Message::ApplyStyleName => self.rename_style(),
+            Message::RemoveStyle => self.remove_style(),
             #[cfg(not(target_arch = "wasm32"))]
             Message::Reveal(name) => {
                 match self.library.iter().position(|a| a.name == name) {

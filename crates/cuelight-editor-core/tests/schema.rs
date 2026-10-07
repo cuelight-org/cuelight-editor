@@ -133,6 +133,7 @@ fn value(input: Input) -> Value {
         Input::Colour | Input::Opaque => json!("#FF0000"),
         Input::Text => json!("go"),
         Input::Artwork => json!("art"),
+        Input::Font => json!("other"),
     }
 }
 
@@ -220,14 +221,19 @@ fn plain(defs: &Value, node: &Value) -> Value {
     }
 }
 
-/// Every key under `node` at `prefix` that no setting reaches and no
-/// part is named for; an object a setting reaches into is walked too.
-fn unedited(defs: &Value, node: &Value, prefix: &[String], missing: &mut Vec<String>) {
-    let settings: Vec<Vec<&str>> = fields::SHOW_FIELDS
-        .iter()
-        .map(|f| f.path.to_vec())
-        .collect();
-    let elsewhere: BTreeSet<&str> = fields::SHOW_ELSEWHERE.iter().map(|(key, _)| *key).collect();
+/// Every key under `node` at `prefix` that no field of `table` reaches
+/// and `elsewhere` does not name; an object a field reaches into is
+/// walked too.
+fn unedited(
+    table: &[fields::Field],
+    elsewhere: &[(&str, &str)],
+    defs: &Value,
+    node: &Value,
+    prefix: &[String],
+    missing: &mut Vec<String>,
+) {
+    let settings: Vec<Vec<&str>> = table.iter().map(|f| f.path.to_vec()).collect();
+    let named: BTreeSet<&str> = elsewhere.iter().map(|(key, _)| *key).collect();
     let node = plain(defs, node);
     let Some(properties) = node["properties"].as_object() else {
         return;
@@ -239,13 +245,13 @@ fn unedited(defs: &Value, node: &Value, prefix: &[String], missing: &mut Vec<Str
         let inside = settings
             .iter()
             .any(|s| s.len() > path.len() && s[..path.len()] == path[..]);
-        if exact || elsewhere.contains(key.as_str()) {
+        if exact || named.contains(key.as_str()) {
             continue;
         }
         if !inside {
             missing.push(path.join("."));
         } else if plain(defs, child)["type"] == "object" {
-            unedited(defs, child, &path, missing);
+            unedited(table, elsewhere, defs, child, &path, missing);
         }
     }
 }
@@ -255,7 +261,14 @@ fn every_show_key_is_a_setting_or_left_to_a_named_part() {
     let schema = serde_json::to_value(schemars::schema_for!(cuelight_core::Show)).unwrap();
     let defs = &schema["$defs"];
     let mut missing = Vec::new();
-    unedited(defs, &schema, &[], &mut missing);
+    unedited(
+        fields::SHOW_FIELDS,
+        fields::SHOW_ELSEWHERE,
+        defs,
+        &schema,
+        &[],
+        &mut missing,
+    );
     assert!(missing.is_empty(), "show keys nobody edits: {missing:?}");
     // The walk reaches into the output and the input.
     let output = plain(defs, &schema["properties"]["output"]);
@@ -301,6 +314,60 @@ fn every_show_setting_set_is_what_the_engine_reads() {
         assert!(
             !fields::is_default(&Value::Null, field, &set),
             "{} is not its default",
+            field.label
+        );
+    }
+}
+
+#[test]
+fn every_font_style_key_is_a_field() {
+    let schema = serde_json::to_value(schemars::schema_for!(cuelight_core::FontStyle)).unwrap();
+    let mut missing = Vec::new();
+    unedited(
+        fields::STYLE_FIELDS,
+        &[],
+        &schema["$defs"],
+        &schema,
+        &[],
+        &mut missing,
+    );
+    assert!(
+        missing.is_empty(),
+        "font style keys nobody edits: {missing:?}"
+    );
+}
+
+#[test]
+fn every_font_style_field_set_is_what_the_engine_reads() {
+    for field in fields::STYLE_FIELDS {
+        let show = json!({"format": 1, "name": "t", "size": [64, 32],
+            "fonts": {"f": {"file": "none", "size": 8}}});
+        let mut document = Document::parse(&serde_json::to_string_pretty(&show).unwrap()).unwrap();
+        let style = Pointer::parse("/fonts/f").unwrap();
+        let set = value(field.input);
+        fields::set(&mut document, &style, field, set.clone()).unwrap();
+
+        let mut engine = Engine::new();
+        let findings = engine.load_show_tolerant(&document.text()).unwrap();
+        let Some(loaded) = engine.show().and_then(|show| show.fonts.get("f")) else {
+            panic!("{}: the style did not load: {findings:?}", field.label);
+        };
+        let loaded = serde_json::to_value(loaded).unwrap();
+        let read = fields::read(&loaded, field);
+        let same = match (read, &set) {
+            (Some(Value::Number(a)), Value::Number(b)) => a.as_f64() == b.as_f64(),
+            (Some(Value::Array(a)), Value::Array(b)) => {
+                a.iter().zip(b).all(|(x, y)| x.as_f64() == y.as_f64())
+            }
+            (Some(read), set) => {
+                read == set
+                    || read.as_str().map(str::to_uppercase) == set.as_str().map(str::to_uppercase)
+            }
+            (None, _) => false,
+        };
+        assert!(
+            same,
+            "style {}: set {set}, the engine reads {read:?}",
             field.label
         );
     }

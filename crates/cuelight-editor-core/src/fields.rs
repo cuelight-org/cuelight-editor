@@ -29,6 +29,8 @@ pub enum Input {
     Text,
     /// The name of one of the show's images or vector artwork.
     Artwork,
+    /// The name of one of the show's font files.
+    Font,
 }
 
 /// A field of a layer: where the layer writes it, how it is typed, and
@@ -334,6 +336,35 @@ const fn show_field(label: &'static str, path: &'static [&'static str], input: I
     }
 }
 
+/// A font style's keys, in the order the inspector lists them.
+pub const STYLE_FIELDS: &[Field] = &[
+    style_field("file", &["file"], Input::Font, false),
+    style_field("size", &["size"], Input::Number, false),
+    style_field("color", &["color"], Input::Opaque, false),
+    style_field("border", &["border", "color"], Input::Opaque, true),
+    style_field("border width", &["border", "width"], Input::Count, false),
+    style_field("shadow", &["shadow", "color"], Input::Colour, true),
+    style_field("shadow offset", &["shadow", "offset"], Input::Pair, true),
+    style_field("shadow blur", &["shadow", "blur"], Input::Number, false),
+    style_field("pixels", &["pixels"], Input::Toggle, false),
+];
+
+const fn style_field(
+    label: &'static str,
+    path: &'static [&'static str],
+    input: Input,
+    needed: bool,
+) -> Field {
+    Field {
+        label,
+        path,
+        input,
+        kinds: &["font style"],
+        not: &[],
+        needed,
+    }
+}
+
 /// The show's keys the inspector does not edit as settings, and what
 /// edits them instead.
 pub const SHOW_ELSEWHERE: &[(&str, &str)] = &[
@@ -376,7 +407,11 @@ pub fn kind(layer: &Value) -> Option<&str> {
 
 /// The fields a layer of `kind` has, or the show's settings for `show`.
 pub fn of(kind: &str) -> impl Iterator<Item = &'static Field> + '_ {
-    let table = if kind == "show" { SHOW_FIELDS } else { FIELDS };
+    let table = match kind {
+        "show" => SHOW_FIELDS,
+        "font style" => STYLE_FIELDS,
+        _ => FIELDS,
+    };
     table.iter().filter(move |field| {
         (field.kinds.is_empty() || field.kinds.contains(&kind)) && !field.not.contains(&kind)
     })
@@ -475,7 +510,7 @@ pub fn parse(field: &Field, typed: &str) -> Result<Value, String> {
                 _ => Err("a colour without alpha is needed: #RRGGBB".to_owned()),
             })
         }
-        Input::Text | Input::Artwork => {
+        Input::Text | Input::Artwork | Input::Font => {
             if typed.is_empty() {
                 Err("a name is needed".to_owned())
             } else {
@@ -522,6 +557,29 @@ pub fn set(
                     .entry("color")
                     .or_insert_with(|| Value::from("#FFFFFF"));
             }
+            // A font style's border needs its colour, and its shadow its
+            // colour and offset: one set alone starts them dark, two
+            // pixels down and right.
+            if field.kinds == ["font style"]
+                && let Value::Object(object) = &mut built
+            {
+                match *key {
+                    "border" => {
+                        object
+                            .entry("color")
+                            .or_insert_with(|| Value::from("#000000"));
+                    }
+                    "shadow" => {
+                        object
+                            .entry("color")
+                            .or_insert_with(|| Value::from("#000000"));
+                        object
+                            .entry("offset")
+                            .or_insert_with(|| serde_json::json!([2, 2]));
+                    }
+                    _ => {}
+                }
+            }
             return document.insert(&next, built);
         }
         parent = next;
@@ -535,6 +593,10 @@ pub fn set(
 pub fn is_default(layer: &Value, field: &Field, value: &Value) -> bool {
     if field.kinds == ["show"] {
         return show_default(field).is_some_and(|default| crate::edit::same(&default, value));
+    }
+    if field.kinds == ["font style"] {
+        return style_default(layer, field)
+            .is_some_and(|default| crate::edit::same(&default, value));
     }
     let mut without = layer.clone();
     let Some((last, parents)) = field.path.split_last() else {
@@ -573,6 +635,23 @@ pub fn show_default(field: &Field) -> Option<Value> {
         "edges": Edges::default(),
     });
     read(&bare, field).cloned()
+}
+
+/// What the font style `style` (its JSON) has for `field` when it does
+/// not write it, as the engine reads it without the key. Its file has
+/// none.
+pub fn style_default(style: &Value, field: &Field) -> Option<Value> {
+    let (last, parents) = field.path.split_last()?;
+    let mut without = style.clone();
+    let parent = parents
+        .iter()
+        .try_fold(&mut without, |node, key| node.get_mut(*key));
+    if let Some(object) = parent.and_then(Value::as_object_mut) {
+        object.remove(*last);
+    }
+    let loaded: cuelight_core::FontStyle = serde_json::from_value(without).ok()?;
+    let loaded = serde_json::to_value(loaded).ok()?;
+    read(&loaded, field).cloned()
 }
 
 /// What the document writes for `field` of the layer (or show) at

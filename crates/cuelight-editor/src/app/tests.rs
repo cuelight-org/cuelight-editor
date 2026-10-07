@@ -2805,3 +2805,139 @@ fn renaming_a_variables_row_renames_it_wherever_it_is_read() {
     let _ = app.update(Message::CancelRename);
     assert!(app.rename.is_none() && app.renaming.is_none());
 }
+
+/// Every file under `dir` with its bytes, and every folder.
+fn folder_tree(dir: &std::path::Path) -> BTreeMap<String, Option<Vec<u8>>> {
+    fn walk(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        out: &mut BTreeMap<String, Option<Vec<u8>>>,
+    ) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            if path.is_dir() {
+                out.insert(name, None);
+                walk(root, &path, out);
+            } else {
+                out.insert(name, Some(std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+/// A 16 x 8 picture, wider than the mini show's 8 x 8 dot.
+fn wide_png() -> Vec<u8> {
+    std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../cuelight-editor-core/tests/fixtures/typed/assets/fonts/tiny.png"),
+    )
+    .unwrap()
+}
+
+fn image_width(app: &App, name: &str) -> Option<u32> {
+    let session = app.session.as_ref().unwrap();
+    lock(&session.engine).image(name).map(|i| i.width)
+}
+
+fn asset_index(app: &App, name: &str) -> usize {
+    app.library
+        .iter()
+        .position(|a| a.name == name)
+        .unwrap_or_else(|| panic!("no asset {name}"))
+}
+
+/// An image dropped on the window, put on the stage, renamed and
+/// deleted, each undone in turn: the stage follows every step, and the
+/// folder saved after the last undo is the folder it was.
+#[test]
+fn an_image_imported_used_renamed_and_deleted_undoes_to_the_folder_it_was() {
+    let (mut app, dir) = open_copy();
+    let before = folder_tree(dir.path());
+    let elsewhere = tempfile::tempdir().unwrap();
+    let glow = elsewhere.path().join("glow.png");
+    std::fs::write(&glow, wide_png()).unwrap();
+
+    let _ = app.update(Message::Dropped(glow));
+    assert_eq!(app.status, "imported glow");
+    assert_eq!(app.tab, Tab::Assets);
+    assert_eq!(app.selected, Some(asset_index(&app, "glow")));
+    assert_eq!(image_width(&app, "glow"), Some(16));
+    {
+        let mut ui = simulator(app.view());
+        assert!(ui.find("Import...").is_ok());
+        assert!(ui.find("Replace...").is_ok());
+    }
+
+    let _ = app.update(Message::UseAsset(asset_index(&app, "glow")));
+    assert!(app.status.starts_with("added"), "{}", app.status);
+    let used = |app: &App, name: &str| app.library[asset_index(app, name)].uses.len();
+    assert_eq!(used(&app, "glow"), 1);
+
+    let _ = app.update(Message::DeleteAsset(asset_index(&app, "glow")));
+    assert!(
+        app.status
+            .starts_with("cannot delete: glow is used by glow"),
+        "{}",
+        app.status
+    );
+
+    let _ = app.update(Message::Select(Some(asset_index(&app, "glow"))));
+    let _ = app.update(Message::TypeAssetName("halo".into()));
+    let _ = app.update(Message::ApplyAssetName);
+    assert_eq!(app.status, "renamed glow to halo, and 1 use(s)");
+    assert_eq!(image_width(&app, "halo"), Some(16));
+    assert_eq!(image_width(&app, "glow"), None);
+    assert_eq!(used(&app, "halo"), 1);
+
+    // The layer goes, then the image.
+    let layer = app.library[asset_index(&app, "halo")].uses[0].path.clone();
+    let _ = app.update(Message::Choose(layer));
+    let _ = app.update(Message::DeleteLayers);
+    let _ = app.update(Message::DeleteAsset(asset_index(&app, "halo")));
+    assert_eq!(app.status, "deleted halo");
+    assert_eq!(image_width(&app, "halo"), None);
+    let _ = app.update(Message::Save);
+    assert!(!dir.path().join("assets/halo.png").exists());
+
+    let _ = app.update(Message::Undo);
+    assert_eq!(image_width(&app, "halo"), Some(16), "the delete undone");
+    let _ = app.update(Message::Undo);
+    assert_eq!(used(&app, "halo"), 1, "the layer back");
+    let _ = app.update(Message::Undo);
+    assert_eq!(image_width(&app, "glow"), Some(16), "the rename undone");
+    assert_eq!(image_width(&app, "halo"), None);
+    let _ = app.update(Message::Undo);
+    assert_eq!(used(&app, "glow"), 0, "the layer taken out");
+    let _ = app.update(Message::Undo);
+    assert_eq!(image_width(&app, "glow"), None, "the import undone");
+    assert!(app.library.iter().all(|a| a.name != "glow"));
+    let _ = app.update(Message::Save);
+    assert!(app.status.starts_with("saved"), "{}", app.status);
+    assert_eq!(folder_tree(dir.path()), before);
+}
+
+/// A re-export of a picture put in its place: the stage draws the new
+/// one, and an undo the old.
+#[test]
+fn a_replaced_image_is_on_the_stage_at_once() {
+    let (mut app, _dir) = open_copy();
+    assert_eq!(image_width(&app, "dot"), Some(8));
+    let _ = app.update(Message::ReplaceWith(
+        "dot".into(),
+        Some(("dot.png".into(), wide_png())),
+    ));
+    assert_eq!(app.status, "replaced dot with dot.png");
+    assert_eq!(image_width(&app, "dot"), Some(16));
+    let _ = app.update(Message::Undo);
+    assert_eq!(image_width(&app, "dot"), Some(8));
+    let _ = app.update(Message::Redo);
+    assert_eq!(image_width(&app, "dot"), Some(16));
+}

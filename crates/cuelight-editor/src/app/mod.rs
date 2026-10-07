@@ -37,6 +37,7 @@ mod inspector;
 mod journal;
 mod library;
 mod lists;
+mod manage;
 mod manipulate;
 mod renames;
 mod scenes;
@@ -140,6 +141,12 @@ pub struct App {
     style: Option<String>,
     /// A new name typed for the picked font style, not applied yet.
     style_name_typed: Option<String>,
+    /// A new name typed for the picked asset, not applied yet.
+    asset_name_typed: Option<String>,
+    /// The document's edits of asset files the engine was registered
+    /// with: when the document's differ, after an import or an undo of
+    /// one, the engine is registered again.
+    applied_files: BTreeMap<String, Option<cuelight_editor_core::document::Bytes>>,
     /// The preview draws the artwork at its own size rather than fitted
     /// to the inspector.
     actual_size: bool,
@@ -516,6 +523,24 @@ pub enum Message {
     ApplyStyleName,
     /// Take the picked font style out, which nothing uses.
     RemoveStyle,
+    /// Pick files to import into the show's assets, then the files
+    /// picked, by name and bytes.
+    ImportAssets,
+    Import(Option<Vec<dialog::File>>),
+    /// Put an asset on the stage: a layer for it.
+    UseAsset(usize),
+    /// Delete an asset nothing uses.
+    DeleteAsset(usize),
+    /// A new name typed for the picked asset, and Enter in it.
+    TypeAssetName(String),
+    ApplyAssetName,
+    /// Pick a file to replace an asset with, then the file picked, for
+    /// the asset by its name.
+    ReplaceAsset(usize),
+    ReplaceWith(String, Option<dialog::File>),
+    /// Show an asset's file in the system's file manager.
+    #[cfg(not(target_arch = "wasm32"))]
+    LocateAsset(usize),
     /// Light or dark picked in the top bar, or back to the system's.
     PickTheme(Option<iced::theme::Mode>),
     /// A selection or a move in the log; edits are not let through.
@@ -568,6 +593,8 @@ impl App {
             selected: None,
             style: None,
             style_name_typed: None,
+            asset_name_typed: None,
+            applied_files: BTreeMap::new(),
             actual_size: false,
             tab: Tab::Layers,
             rows: Vec::new(),
@@ -738,6 +765,8 @@ impl App {
         } else {
             task
         };
+        // The engine follows the document's files, whatever changed them.
+        let task = Task::batch([task, self.follow_files()]);
         self.keep_journal();
         self.refresh_fields();
         self.refresh_bases();
@@ -801,6 +830,8 @@ impl App {
             | Message::RemoveListRow(..)
             | Message::PickStyle(_)
             | Message::Select(_)
+            | Message::UseAsset(_)
+            | Message::DeleteAsset(_)
             | Message::CloseRequested
             | Message::Reset(_)
             | Message::ResetField(_)
@@ -921,6 +952,15 @@ impl App {
                 match picked {
                     #[cfg(not(target_arch = "wasm32"))]
                     Some(Picked::Path(path)) => self.open(Opened::from_path(&path)),
+                    // A file a show can use, dropped on an open show, goes
+                    // into it.
+                    #[cfg(target_arch = "wasm32")]
+                    Some(Picked::File { name, bytes })
+                        if self.session.is_some()
+                            && cuelight_editor_core::manage::place_for(&name).is_some() =>
+                    {
+                        self.import(vec![(name, bytes)])
+                    }
                     #[cfg(target_arch = "wasm32")]
                     Some(Picked::File { name, bytes }) => {
                         self.open(Opened::from_bytes(&name, &bytes))
@@ -929,7 +969,7 @@ impl App {
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Message::Dropped(path) => self.open(Opened::from_path(&path)),
+            Message::Dropped(path) => self.dropped(path),
             #[cfg(target_arch = "wasm32")]
             Message::SoundsReady(sounds) => {
                 for (name, result) in sounds {
@@ -1169,6 +1209,7 @@ impl App {
             Message::Select(index) => {
                 self.selected = index.filter(|i| *i < self.library.len());
                 self.style = None;
+                self.asset_name_typed = None;
                 Task::none()
             }
             Message::PickStyle(name) => {
@@ -1184,6 +1225,48 @@ impl App {
             }
             Message::ApplyStyleName => self.rename_style(),
             Message::RemoveStyle => self.remove_style(),
+            Message::ImportAssets => {
+                if self.asking {
+                    return Task::none();
+                }
+                self.asking = true;
+                Task::perform(dialog::pick_assets(), Message::Import)
+            }
+            Message::Import(picked) => {
+                self.asking = false;
+                match picked {
+                    Some(files) => self.import(files),
+                    None => Task::none(),
+                }
+            }
+            Message::UseAsset(index) => self.use_asset(index),
+            Message::DeleteAsset(index) => self.delete_asset(index),
+            Message::TypeAssetName(name) => {
+                self.asset_name_typed = Some(name);
+                Task::none()
+            }
+            Message::ApplyAssetName => self.rename_asset(),
+            Message::ReplaceAsset(index) => {
+                let Some(name) = self.library.get(index).map(|a| a.name.clone()) else {
+                    return Task::none();
+                };
+                if self.asking {
+                    return Task::none();
+                }
+                self.asking = true;
+                Task::perform(dialog::pick_replacement(name.clone()), move |file| {
+                    Message::ReplaceWith(name.clone(), file)
+                })
+            }
+            Message::ReplaceWith(name, file) => {
+                self.asking = false;
+                match file {
+                    Some(file) => self.replace_asset(&name, file),
+                    None => Task::none(),
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::LocateAsset(index) => self.locate_asset(index),
             #[cfg(not(target_arch = "wasm32"))]
             Message::Reveal(name) => {
                 match self.library.iter().position(|a| a.name == name) {
@@ -1392,6 +1475,7 @@ impl App {
         if let Some(show) = engine.show() {
             self.rows = tree::rows(show);
             self.inputs = Inputs::of(show);
+            cuelight_editor_core::assets::refresh_uses(&mut self.library, show);
         }
         self.summary = opened::resummarize(&engine, &self.summary, &findings);
         drop(engine);
@@ -1514,6 +1598,8 @@ impl App {
                     .extend(cuelight_editor_core::log::load(&self.summary.problems));
                 session.audit(&document.text());
                 self.files = files;
+                self.applied_files = manage::asset_edits(document.files());
+                self.asset_name_typed = None;
                 self.document = Some(document);
                 self.session = Some(session);
                 self.journal_opened();

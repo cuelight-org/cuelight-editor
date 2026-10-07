@@ -88,6 +88,7 @@ impl App {
         self.reload_text(&text, true)?;
         self.document = Some(document);
         self.files = change.files;
+        self.journal_replaced();
         Ok(())
     }
 

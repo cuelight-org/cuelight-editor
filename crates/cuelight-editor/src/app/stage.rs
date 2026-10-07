@@ -204,6 +204,16 @@ impl App {
         snap_to(STAGE, RelativeOffset { x: 0.5, y: 0.5 }, Animation::Instant)
     }
 
+    /// Centre the show again when it is fitted: after the stage's room
+    /// changed under it.
+    pub(super) fn recentre_fitted(&mut self) -> Task<Message> {
+        if self.zoom == Zoom::Fit {
+            self.centre_stage()
+        } else {
+            Task::none()
+        }
+    }
+
     /// After a zoom from the scale `before`, keep the canvas point that was
     /// under the middle of the view there. The room round the show is half
     /// the view on every side, so that point is the scroll offset over the

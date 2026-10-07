@@ -33,6 +33,7 @@ mod assets;
 mod editing;
 mod inputs_panel;
 mod inspector;
+mod journal;
 mod library;
 mod lists;
 mod manipulate;
@@ -175,6 +176,8 @@ pub struct App {
     /// The show document as written, for the inspector to show a
     /// layer's own text, and as it is edited.
     document: Option<Document>,
+    /// The open show's unsaved edits, kept against a crash.
+    journal: journal::Journal,
     /// What was typed into the inspector's fields, for the layer they
     /// were typed for, until it is applied.
     typed: Option<(LayerPath, Vec<(Property, String)>)>,
@@ -345,6 +348,10 @@ pub enum Message {
     KeepEdits,
     #[cfg(not(target_arch = "wasm32"))]
     LoadFromDisk,
+    /// The opened show's journal had unsaved edits: put them back as
+    /// one step to undo, or drop them.
+    RestoreEdits,
+    DiscardEdits,
     #[cfg(not(target_arch = "wasm32"))]
     Dropped(std::path::PathBuf),
     /// A frame: the instant to move the show to.
@@ -476,6 +483,7 @@ impl App {
             zoom: Zoom::Fit,
             scrolled: None,
             document: None,
+            journal: journal::Journal::new(),
             typed: None,
             owned: None,
             bases: Vec::new(),
@@ -553,6 +561,7 @@ impl App {
             audio.resume();
         }
         let task = self.handle(message);
+        self.keep_journal();
         self.refresh_fields();
         self.refresh_bases();
         self.refresh_fields_of_layer();
@@ -668,9 +677,23 @@ impl App {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Message::LoadFromDisk => match self.outside.take() {
-                Some(change) => self.reload(change),
+                Some(change) => {
+                    self.forget_edits();
+                    self.reload(change)
+                }
                 None => Task::none(),
             },
+            // The bar going gives the stage its room back: a fitted show
+            // is centred again in it. At a set zoom the scroll keeps the
+            // same point in the middle by itself.
+            Message::RestoreEdits => {
+                let task = self.restore_edits();
+                Task::batch([task, self.recentre_fitted()])
+            }
+            Message::DiscardEdits => {
+                let task = self.discard_edits();
+                Task::batch([task, self.recentre_fitted()])
+            }
             Message::Picked(picked) => {
                 self.asking = false;
                 match picked {
@@ -1099,6 +1122,7 @@ impl App {
                 self.files = files;
                 self.document = Some(document);
                 self.session = Some(session);
+                self.journal_opened();
                 let centred = self.centre_stage();
                 Task::batch([task, fonts, centred])
             }
@@ -1343,7 +1367,16 @@ impl App {
         let asking = self.outside_prompt();
         #[cfg(target_arch = "wasm32")]
         let asking: Option<Element<'_, Message>> = None;
-        column![container(bar).padding(8).width(Fill), asking, body, status].boxed()
+        // So does a journal with edits the show was not saved with.
+        let restore = self.restore_prompt();
+        column![
+            container(bar).padding(8).width(Fill),
+            asking,
+            restore,
+            body,
+            status
+        ]
+        .boxed()
     }
 }
 

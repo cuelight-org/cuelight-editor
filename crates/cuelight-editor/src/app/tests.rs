@@ -1572,3 +1572,128 @@ fn a_theme_picked_in_the_top_bar_wins_over_the_systems() {
         <Theme as iced::theme::Base>::default(iced::theme::Mode::Dark)
     );
 }
+
+/// The mini fixture copied into `show`, and an app keeping its journal
+/// in `journal` opened on it.
+fn open_journaled(show: &std::path::Path, journal: &std::path::Path) -> App {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cuelight-editor-core/tests/fixtures/mini");
+    for name in ["show.json", "test-driver.json", "assets/dot.png"] {
+        let to = show.join(name);
+        if !to.exists() {
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(fixture.join(name), to).unwrap();
+        }
+    }
+    let (mut app, _) = App::new();
+    app.journal.folder = Some(journal.to_owned());
+    let _ = app.update(Message::Dropped(show.into()));
+    app
+}
+
+/// The entry the journal holds for the open show.
+fn entry(app: &App) -> Option<cuelight_editor_core::journal::Entry> {
+    use cuelight_editor_core::journal;
+    journal::read(
+        app.journal.folder.as_ref().unwrap(),
+        &journal::key(app.origin.as_ref().unwrap()),
+    )
+}
+
+/// Move the group to `x`, as typed in the inspector.
+fn move_group(app: &mut App, x: &str) {
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    let _ = app.update(Message::Choose(group));
+    let _ = app.update(Message::Type(Property::X, x.to_owned()));
+    let _ = app.update(Message::Apply(Property::X));
+}
+
+#[test]
+fn edits_lost_in_a_crash_are_restored_on_opening_again() {
+    let (show, journal) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut app = open_journaled(show.path(), journal.path());
+    assert!(entry(&app).is_none(), "nothing to keep before an edit");
+    move_group(&mut app, "40");
+    let edited = app.document.as_ref().unwrap().text();
+    assert_eq!(entry(&app).unwrap().text, edited);
+    drop(app);
+
+    let mut app = open_journaled(show.path(), journal.path());
+    assert_eq!(app.title(), "mini - cuelight editor");
+    let mut ui = simulator(app.view());
+    assert!(
+        ui.find("This show has unsaved edits from moments ago.")
+            .is_ok()
+    );
+    let _ = ui.click("Restore");
+    for message in ui.into_messages() {
+        let _ = app.update(message);
+    }
+    assert!(app.journal.offer.is_none());
+    assert_eq!(app.document.as_ref().unwrap().text(), edited);
+    assert_eq!(app.title(), "mini* - cuelight editor");
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(40.0)));
+
+    // One undo goes back to the file, which leaves nothing to keep.
+    let _ = app.update(Message::Undo);
+    assert_eq!(app.title(), "mini - cuelight editor");
+    assert!(entry(&app).is_none());
+}
+
+#[test]
+fn discarded_edits_are_gone() {
+    let (show, journal) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut app = open_journaled(show.path(), journal.path());
+    move_group(&mut app, "40");
+    let mut app = open_journaled(show.path(), journal.path());
+    let opened = app.document.as_ref().unwrap().text();
+    let _ = app.update(Message::DiscardEdits);
+    assert_eq!(app.status, "discarded the unsaved edits");
+    assert!(entry(&app).is_none());
+    assert_eq!(app.document.as_ref().unwrap().text(), opened);
+    let app = open_journaled(show.path(), journal.path());
+    assert!(app.journal.offer.is_none());
+}
+
+#[test]
+fn a_save_clears_the_journal() {
+    let (show, journal) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut app = open_journaled(show.path(), journal.path());
+    move_group(&mut app, "40");
+    assert!(entry(&app).is_some());
+    let _ = app.update(Message::Save);
+    assert!(app.status.starts_with("saved "), "{}", app.status);
+    assert!(entry(&app).is_none());
+    let app = open_journaled(show.path(), journal.path());
+    assert!(app.journal.offer.is_none());
+}
+
+#[test]
+fn edits_to_a_show_that_changed_since_say_so() {
+    let (show, journal) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut app = open_journaled(show.path(), journal.path());
+    move_group(&mut app, "40");
+    let file = show.path().join("show.json");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace("\"name\": \"mini\"", "\"name\": \"outside\""),
+    )
+    .unwrap();
+
+    let mut app = open_journaled(show.path(), journal.path());
+    assert!(app.journal.offer.as_ref().unwrap().changed);
+    {
+        let mut ui = simulator(app.view());
+        assert!(
+            ui.find(
+                "This show has unsaved edits from moments ago, but it changed since; restoring them drops that change."
+            )
+            .is_ok()
+        );
+    }
+    let _ = app.update(Message::RestoreEdits);
+    assert_eq!(app.summary.name, "mini", "the edits' own text is back");
+    assert!(app.document.as_ref().unwrap().is_dirty());
+}

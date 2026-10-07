@@ -75,6 +75,10 @@ impl App {
                 b = b.style(button::secondary);
             }
             panel = panel.push(b.boxed());
+            // A font's styles under it, where its previews are.
+            if asset.kind == Kind::Font {
+                panel = panel.push(self.style_rows(&asset.name).boxed());
+            }
         }
         panel
     }

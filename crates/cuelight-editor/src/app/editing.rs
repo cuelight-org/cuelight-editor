@@ -4,7 +4,7 @@
 
 use super::*;
 use cuelight_core::Influence;
-use cuelight_editor_core::document::Pointer;
+use cuelight_editor_core::document::{Part, Pointer};
 use cuelight_editor_core::edit;
 use cuelight_editor_core::fields;
 
@@ -218,7 +218,7 @@ impl App {
         let labels: Vec<&'static str> = self
             .field_typed
             .as_ref()
-            .filter(|(path, _)| self.selection.last() == path.as_ref())
+            .filter(|(of, _)| *of == self.fields_of())
             .map(|(_, typed)| typed.iter().map(|(l, _)| *l).collect())
             .unwrap_or_default();
         for label in labels {
@@ -228,6 +228,9 @@ impl App {
             let _ = self.apply_field(label);
         }
         self.commit_lists(keep.as_ref());
+        if self.style_name_typed.is_some() && keep.is_none() {
+            let _ = self.rename_style();
+        }
     }
 
     /// Whether anything typed is waiting to be applied, for the picked
@@ -237,10 +240,12 @@ impl App {
         self.typed
             .as_ref()
             .is_some_and(|(path, typed)| here(path) && !typed.is_empty())
-            || self.field_typed.as_ref().is_some_and(|(path, typed)| {
-                self.selection.last() == path.as_ref() && !typed.is_empty()
-            })
+            || self
+                .field_typed
+                .as_ref()
+                .is_some_and(|(of, typed)| *of == self.fields_of() && !typed.is_empty())
             || (self.selection.is_empty() && !self.list_typed.is_empty())
+            || self.style_name_typed.is_some()
     }
 
     /// Why what is typed into a property's field does not read, if it
@@ -256,8 +261,8 @@ impl App {
 
     /// The same for one of the layer's other fields.
     pub(super) fn field_typing_error(&self, label: &str) -> Option<String> {
-        let (path, typed) = self.field_typed.as_ref()?;
-        if self.selection.last() != path.as_ref() {
+        let (of, typed) = self.field_typed.as_ref()?;
+        if *of != self.fields_of() {
             return None;
         }
         let (_, text) = typed.iter().find(|(l, _)| *l == label)?;
@@ -275,8 +280,8 @@ impl App {
 
     /// The same for one of the layer's other fields.
     pub(super) fn is_field_pending(&self, label: &str) -> bool {
-        self.field_typed.as_ref().is_some_and(|(path, typed)| {
-            self.selection.last() == path.as_ref() && typed.iter().any(|(l, _)| *l == label)
+        self.field_typed.as_ref().is_some_and(|(of, typed)| {
+            *of == self.fields_of() && typed.iter().any(|(l, _)| *l == label)
         })
     }
 
@@ -369,6 +374,10 @@ impl App {
         let Some(session) = &self.session else {
             return;
         };
+        if let FieldsOf::Style(name) = self.fields_of() {
+            self.refresh_style_fields(&name);
+            return;
+        }
         let Some(path) = self.selection.last() else {
             self.refresh_show_settings();
             return;
@@ -435,6 +444,35 @@ impl App {
         }
     }
 
+    /// A font style's fields as their rows show them: what it writes, or
+    /// what the engine reads without it.
+    fn refresh_style_fields(&mut self, name: &str) {
+        let Some(style) = self
+            .document
+            .as_ref()
+            .and_then(|d| d.get(&style_pointer(name)))
+            .map(|n| n.value())
+        else {
+            return;
+        };
+        for field in fields::STYLE_FIELDS {
+            let own = fields::read(&style, field).cloned();
+            let default = fields::style_default(&style, field);
+            let value = own.as_ref().or(default.as_ref());
+            self.layer_fields.push(LayerField {
+                field,
+                shown: own.as_ref().and_then(|v| fields::show(field, v)),
+                default: default
+                    .as_ref()
+                    .and_then(|v| fields::show(field, v))
+                    .unwrap_or_default(),
+                raw: value.map(ToString::to_string).unwrap_or_default(),
+                editable: value.is_none_or(|v| fields::show(field, v).is_some()),
+                written: own.is_some(),
+            });
+        }
+    }
+
     /// One of the rows' fields by its label, from the rows refreshed
     /// last: the engine's lock, which the inspector holds while it lays
     /// the rows out, is not taken.
@@ -445,19 +483,33 @@ impl App {
             .map(|f| f.field)
     }
 
-    /// Where the fields being edited sit in the document: the picked
-    /// layer, or the show's root while nothing is picked.
-    fn fields_owner(&self) -> Option<Pointer> {
+    /// What the inspector's fields are of now: the font style picked in
+    /// the assets, the picked layer, or the show while nothing is.
+    pub(super) fn fields_of(&self) -> FieldsOf {
+        if self.tab == Tab::Assets
+            && let Some(style) = &self.style
+        {
+            return FieldsOf::Style(style.clone());
+        }
         match self.selection.last() {
-            Some(path) => self.layer_pointer(path),
-            None => Some(Pointer::default()),
+            Some(path) => FieldsOf::Layer(path.clone()),
+            None => FieldsOf::Show,
+        }
+    }
+
+    /// Where the fields being edited sit in the document.
+    fn fields_owner(&self) -> Option<Pointer> {
+        match self.fields_of() {
+            FieldsOf::Layer(path) => self.layer_pointer(&path),
+            FieldsOf::Show => Some(Pointer::default()),
+            FieldsOf::Style(name) => Some(style_pointer(&name)),
         }
     }
 
     /// What a field's row shows: what was typed into it, or its value.
     pub(super) fn field_text(&self, label: &str) -> Option<&str> {
-        if let Some((path, typed)) = &self.field_typed
-            && self.selection.last() == path.as_ref()
+        if let Some((of, typed)) = &self.field_typed
+            && *of == self.fields_of()
             && let Some((_, text)) = typed.iter().find(|(l, _)| *l == label)
         {
             return Some(text);
@@ -469,7 +521,7 @@ impl App {
     }
 
     pub(super) fn type_into_field(&mut self, label: &'static str, text: String) {
-        let path = self.selection.last().cloned();
+        let path = self.fields_of();
         match &mut self.field_typed {
             Some((typed_for, typed)) if *typed_for == path => {
                 typed.retain(|(l, _)| *l != label);
@@ -510,12 +562,13 @@ impl App {
         let Some(at) = self.fields_owner() else {
             return Task::none();
         };
+        let of_show = self.fields_of() == FieldsOf::Show;
         let Some(document) = &mut self.document else {
             return Task::none();
         };
         // The default is not written down: setting it takes the key out.
         // The show's defaults need nothing of what it writes.
-        let owner = if self.selection.is_empty() {
+        let owner = if of_show {
             Some(serde_json::Value::Null)
         } else {
             document.get(&at).map(|layer| layer.value())
@@ -701,6 +754,22 @@ impl App {
         let named = node.get("name").or_else(|| node.get("id"))?;
         (named.as_str() == Some(layer.name.as_str())).then_some(pointer)
     }
+}
+
+/// What the inspector's fields are of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum FieldsOf {
+    Show,
+    Layer(LayerPath),
+    /// A font style, by its name in the show's `fonts`.
+    Style(String),
+}
+
+/// The document's pointer to the font style `name`.
+pub(super) fn style_pointer(name: &str) -> Pointer {
+    Pointer::default()
+        .then(Part::Key("fonts".to_owned()))
+        .then(Part::Key(name.to_owned()))
 }
 
 /// A number being dragged by its label: where the drag started, and the

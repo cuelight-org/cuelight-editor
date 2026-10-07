@@ -16,8 +16,8 @@ use iced::widget::Widget as _;
 use iced::widget::pane_grid::{self, Axis, Configuration};
 use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::{
-    button, center, column, container, image, responsive, row, scrollable, slider, space, svg,
-    text, toggler, tooltip,
+    button, center, column, container, image, pick_list, responsive, row, scrollable, slider,
+    space, svg, text, toggler, tooltip,
 };
 use iced::{Element, Fill, Font, Subscription, Task, Theme};
 
@@ -202,6 +202,9 @@ pub struct App {
     /// the window in the theme it picks for it, and the inspector's
     /// colours are taken from the same one.
     mode: iced::theme::Mode,
+    /// Light or dark as picked in the top bar, over the system's
+    /// preference; `None` follows the system.
+    theme_pick: Option<iced::theme::Mode>,
 }
 
 /// An area of the window.
@@ -413,6 +416,8 @@ pub enum Message {
     Resized(pane_grid::ResizeEvent),
     /// The system's light or dark preference, found or changed.
     Mode(iced::theme::Mode),
+    /// Light or dark picked in the top bar, or back to the system's.
+    PickTheme(Option<iced::theme::Mode>),
     /// The window as drawn, for `--screenshot`.
     #[cfg(not(target_arch = "wasm32"))]
     Shot(iced::window::Screenshot),
@@ -481,6 +486,7 @@ impl App {
             field_typed: None,
             list_typed: BTreeMap::new(),
             mode: iced::theme::Mode::None,
+            theme_pick: None,
             fitted: Cell::new(1.0),
             log_open: true,
             follow_scene: false,
@@ -959,6 +965,10 @@ impl App {
                 self.unfolded_field = label;
                 Task::none()
             }
+            Message::PickTheme(pick) => {
+                self.theme_pick = pick;
+                Task::none()
+            }
             Message::Mode(mode) => {
                 self.mode = mode;
                 Task::none()
@@ -1266,6 +1276,23 @@ impl App {
                 .boxed(),
             );
         }
+        // Light or dark, to see the editor and a show's colours in both
+        // whatever the system prefers.
+        let picks = [
+            ThemePick(None),
+            ThemePick(Some(iced::theme::Mode::Light)),
+            ThemePick(Some(iced::theme::Mode::Dark)),
+        ];
+        bar = bar.push(space::horizontal().boxed()).push(
+            pick_list(
+                Some(ThemePick(self.theme_pick)),
+                picks,
+                ThemePick::to_string,
+            )
+            .on_select(|pick: ThemePick| Message::PickTheme(pick.0))
+            .text_size(13)
+            .boxed(),
+        );
 
         let body: Element<'_, Message> = match &self.session {
             None => center(
@@ -1337,11 +1364,33 @@ fn write_png(path: &std::path::Path, shot: &iced::window::Screenshot) -> std::io
     Ok(())
 }
 
-/// The theme iced draws the window in: the one it picks for the
-/// system's preference (or `ICED_THEME`), as the colours of the view that
-/// are not a widget's own style follow it.
+/// The theme iced draws the window in: the one picked in the top bar,
+/// or the one it picks for the system's preference (or `ICED_THEME`),
+/// as the colours of the view that are not a widget's own style follow
+/// it.
 pub fn theme(app: &App) -> Theme {
-    <Theme as iced::theme::Base>::default(app.mode)
+    <Theme as iced::theme::Base>::default(app.theme_pick.unwrap_or(app.mode))
+}
+
+/// The theme the window is told to use: only one picked in the top bar.
+/// Following the system is left to iced, which knows the preference
+/// before the first frame, so a dark desktop never sees a light one.
+pub fn window_theme(app: &App) -> Option<Theme> {
+    app.theme_pick.map(<Theme as iced::theme::Base>::default)
+}
+
+/// A choice in the top bar's theme list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ThemePick(Option<iced::theme::Mode>);
+
+impl std::fmt::Display for ThemePick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            Some(iced::theme::Mode::Light) => "Light",
+            Some(iced::theme::Mode::Dark) => "Dark",
+            _ => "System theme",
+        })
+    }
 }
 
 /// Ask for the system's light or dark preference.

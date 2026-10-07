@@ -1549,3 +1549,26 @@ fn a_drag_on_what_a_timeline_owns_asks_when_it_lets_go() {
         "one step, like the drag"
     );
 }
+
+#[test]
+fn a_theme_picked_in_the_top_bar_wins_over_the_systems() {
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Mode(iced::theme::Mode::Dark));
+    assert!(window_theme(&app).is_none(), "the system's is left to iced");
+    let _ = app.update(Message::PickTheme(Some(iced::theme::Mode::Light)));
+    assert_eq!(
+        window_theme(&app),
+        Some(<Theme as iced::theme::Base>::default(
+            iced::theme::Mode::Light
+        ))
+    );
+    assert_eq!(
+        theme(&app),
+        <Theme as iced::theme::Base>::default(iced::theme::Mode::Light)
+    );
+    let _ = app.update(Message::PickTheme(None));
+    assert_eq!(
+        theme(&app),
+        <Theme as iced::theme::Base>::default(iced::theme::Mode::Dark)
+    );
+}

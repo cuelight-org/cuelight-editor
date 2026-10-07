@@ -13,6 +13,7 @@ pub mod journal;
 pub mod layers;
 pub mod lists;
 pub mod log;
+pub mod manage;
 pub mod opened;
 pub mod placement;
 pub mod renames;

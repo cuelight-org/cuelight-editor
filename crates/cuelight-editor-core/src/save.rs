@@ -3,8 +3,10 @@
 //! The document is written as [`Document::text`] has it: untouched nodes
 //! exactly as read, so a show saved without edits is the same file, and
 //! an edit changes the lines it touched. The other files the edits
-//! touched (the driver, after a rename) go back as they say now, and
-//! every other file the show shipped as it was opened.
+//! touched (the driver after a rename, assets imported, replaced,
+//! renamed or deleted) go back as they say now, a file they took away
+//! is deleted, and every other file the show shipped goes back as it
+//! was opened.
 //!
 //! A folder gets its `show.json` rewritten, a pack is packed again, a
 //! loose document is written in place. A show that came as bytes (a
@@ -68,8 +70,11 @@ pub fn files_with(
     document: &Document,
 ) -> BTreeMap<String, Vec<u8>> {
     let mut files = files.clone();
-    for (name, text) in document.files() {
-        files.insert(name.clone(), text.clone().into_bytes());
+    for (name, bytes) in document.files() {
+        match bytes {
+            Some(bytes) => files.insert(name.clone(), bytes.to_vec()),
+            None => files.remove(name),
+        };
     }
     files.insert("show.json".to_owned(), document.text().into_bytes());
     files
@@ -85,16 +90,29 @@ pub fn save(
 ) -> Result<(), SaveError> {
     check_format(document)?;
     let text = document.text().into_bytes();
-    let others: Vec<(String, Vec<u8>)> = document
+    // The other files the edits changed, added or took away since the
+    // last save.
+    let others: Vec<(String, Option<Vec<u8>>)> = document
         .files()
         .iter()
-        .map(|(name, text)| (name.clone(), text.clone().into_bytes()))
-        .filter(|(name, bytes)| files.get(name) != Some(bytes))
+        .filter(|(name, bytes)| files.get(*name).map(Vec::as_slice) != bytes.as_deref())
+        .map(|(name, bytes)| (name.clone(), bytes.as_deref().map(<[u8]>::to_vec)))
         .collect();
     match origin {
         Origin::Folder(dir) => {
             for (name, bytes) in &others {
-                write(&dir.join(name), bytes)?;
+                let path = dir.join(name);
+                match bytes {
+                    Some(bytes) => {
+                        if let Some(parent) = path.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                SaveError::Write(format!("{}: {e}", parent.display()))
+                            })?;
+                        }
+                        write(&path, bytes)?;
+                    }
+                    None => remove(dir, &path)?,
+                }
             }
             write(&dir.join("show.json"), &text)?;
         }
@@ -108,7 +126,12 @@ pub fn save(
     }
     // A loose document has nowhere for its other files to go.
     if !matches!(origin, Origin::Loose(_)) {
-        files.extend(others);
+        for (name, bytes) in others {
+            match bytes {
+                Some(bytes) => files.insert(name, bytes),
+                None => files.remove(&name),
+            };
+        }
     }
     files.insert("show.json".to_owned(), text);
     document.mark_saved();
@@ -162,6 +185,26 @@ fn check_format(document: &Document) -> Result<(), SaveError> {
             found: u32::try_from(found).unwrap_or(u32::MAX),
             known,
         });
+    }
+    Ok(())
+}
+
+/// Take a file of the show in `dir` away, and the folders it leaves
+/// empty under `dir`: a folder an import made goes with it again. A
+/// file already gone is no error.
+#[cfg(not(target_arch = "wasm32"))]
+fn remove(dir: &Path, path: &Path) -> Result<(), SaveError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(SaveError::Write(format!("{}: {e}", path.display()))),
+    }
+    let mut parent = path.parent();
+    while let Some(folder) = parent.filter(|p| *p != dir && p.starts_with(dir)) {
+        if std::fs::remove_dir(folder).is_err() {
+            break;
+        }
+        parent = folder.parent();
     }
     Ok(())
 }

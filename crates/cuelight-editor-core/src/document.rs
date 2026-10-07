@@ -17,6 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -174,12 +175,13 @@ pub enum Edit {
         item: Item,
         shifted: Option<String>,
     },
-    /// Another of the show's text files, `name`, given new text: the
-    /// driver, when a rename goes through it too.
+    /// Another of the show's files, `name`, given new bytes, added or
+    /// taken away (`None`): the driver, when a rename goes through it
+    /// too, or an asset imported, replaced, renamed or deleted.
     File {
         name: String,
-        before: String,
-        after: String,
+        before: Option<Bytes>,
+        after: Option<Bytes>,
     },
 }
 
@@ -241,6 +243,9 @@ impl Edit {
     }
 }
 
+/// A file's bytes, shared: a step keeps them without a copy.
+pub type Bytes = Arc<[u8]>;
+
 /// What undo takes back at once: one edit, or several made as one.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Step {
@@ -254,9 +259,10 @@ pub struct Document {
     head: String,
     root: Node,
     foot: String,
-    /// The show's other text files as edited along with it, by their
-    /// path in the show; a file no edit touched is not here.
-    files: BTreeMap<String, String>,
+    /// The show's other files as edited along with it, by their path in
+    /// the show: their bytes now, or `None` when taken away. A file no
+    /// edit touched is not here.
+    files: BTreeMap<String, Option<Bytes>>,
     undo: Vec<Step>,
     redo: Vec<Step>,
     /// How far down the undo stack the saved state lies, or `None` when
@@ -268,7 +274,7 @@ pub struct Document {
     /// The text, and the other files, when the outermost open step
     /// began: a step that ends where it began changed nothing, and is
     /// not kept.
-    began: Option<(String, BTreeMap<String, String>)>,
+    began: Option<(String, BTreeMap<String, Option<Bytes>>)>,
     /// Counts every change to the tree: a copy of the text kept
     /// elsewhere is stale when this moved on.
     revision: u64,
@@ -652,13 +658,15 @@ impl Document {
     }
 
     /// Another of the show's text files as the edits left it; `None`
-    /// when none touched it.
+    /// when none touched it, or it is not text.
     pub fn file(&self, name: &str) -> Option<&str> {
-        self.files.get(name).map(String::as_str)
+        let bytes = self.files.get(name)?.as_deref()?;
+        std::str::from_utf8(bytes).ok()
     }
 
-    /// Every other file the edits touched, with its text now.
-    pub fn files(&self) -> &BTreeMap<String, String> {
+    /// Every other file the edits touched: its bytes now, or `None`
+    /// when they took it away.
+    pub fn files(&self) -> &BTreeMap<String, Option<Bytes>> {
         &self.files
     }
 
@@ -666,16 +674,27 @@ impl Document {
     /// undoes like any other. `shipped` is its text as the show came,
     /// for the first edit of it.
     pub fn set_file(&mut self, name: &str, shipped: &str, text: String) {
-        let before = self
-            .files
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| shipped.to_owned());
-        self.files.insert(name.to_owned(), text.clone());
+        self.put_file(
+            name,
+            Some(shipped.as_bytes()),
+            Some(Arc::from(text.into_bytes())),
+        );
+    }
+
+    /// Give another of the show's files new bytes, or take it away with
+    /// `None`, as an edit that undoes like any other. `shipped` is the
+    /// file as the show came, `None` when it did not ship it, for the
+    /// first edit of it.
+    pub fn put_file(&mut self, name: &str, shipped: Option<&[u8]>, bytes: Option<Bytes>) {
+        let before = match self.files.get(name) {
+            Some(now) => now.clone(),
+            None => shipped.map(Arc::from),
+        };
+        self.files.insert(name.to_owned(), bytes.clone());
         self.record(Edit::File {
             name: name.to_owned(),
             before,
-            after: text,
+            after: bytes,
         });
     }
 

@@ -172,14 +172,15 @@ pub fn property_name(property: Property) -> String {
 
 /// Whether `property` does anything for a layer of this kind. Every
 /// layer can be given a place, a scale and an opacity, but a sound
-/// draws nothing: it is heard or not (`visible`), at its gain. A part of
+/// draws nothing: it is heard or not (`visible`), at its gain, from
+/// where it is between the speakers (`pan`). A part of
 /// an artwork has only its placement, opacity and visibility.
 pub fn applies(property: Property, kind: &LayerKind) -> bool {
     match kind {
         LayerKind::Audio { .. } => {
             matches!(
                 property,
-                Property::Visible | Property::Gain | Property::Sound
+                Property::Visible | Property::Gain | Property::Pan | Property::Sound
             )
         }
         LayerKind::Part { .. } => matches!(
@@ -199,7 +200,7 @@ pub fn applies(property: Property, kind: &LayerKind) -> bool {
 
 /// Every property a layer might have, in the order the inspector
 /// lists them: placement first, then appearance, then what the kind adds.
-pub const PROPERTIES: [Property; 18] = [
+pub const PROPERTIES: [Property; 20] = [
     Property::X,
     Property::Y,
     Property::Rotation,
@@ -212,10 +213,12 @@ pub const PROPERTIES: [Property; 18] = [
     Property::Text,
     Property::Font,
     Property::Reveal,
+    Property::Image,
     Property::Frame,
     Property::TileX,
     Property::TileY,
     Property::Gain,
+    Property::Pan,
     Property::Sound,
     Property::Video,
 ];

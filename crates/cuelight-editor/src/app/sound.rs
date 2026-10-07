@@ -104,6 +104,7 @@ impl App {
                     sound: preview.sound.clone(),
                     position,
                     gain: 1.0,
+                    pan: 0.0,
                     looping: false,
                     bus: None,
                 });

@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use cuelight::Engine;
-use cuelight_core::{DigitDisplay, FontStyle, Layer, LayerKind, LayerPath, ReelCells, Root, Show};
+use cuelight_core::{
+    DigitDisplay, FontStyle, Layer, LayerKind, LayerPath, Property, ReelCells, Root, Show,
+};
 
 use crate::artwork::{self, Structure};
 
@@ -307,10 +309,50 @@ impl Walk<'_> {
             }
             _ => {}
         }
+        // What a binding can switch the layer to: every name its map
+        // lists, and its default.
+        for binding in &layer.bindings {
+            let refer: fn(String) -> Ref = match binding.property {
+                Property::Image => Ref::Artwork,
+                Property::Sound => Ref::Sound,
+                Property::Video => Ref::Video,
+                Property::Font => {
+                    let names = bound_names(&binding.reading);
+                    for style in names {
+                        font(&style, &mut note, "bound text");
+                    }
+                    continue;
+                }
+                _ => continue,
+            };
+            for name in bound_names(&binding.reading) {
+                note(
+                    refer(name),
+                    format!("bound to {}", binding.reading.variable),
+                );
+            }
+        }
         // A group's children, and an artwork layer's parts (which name
         // nothing of their own).
         self.walk(layer.children(), &place, out);
     }
+}
+
+/// The names a binding's map and default can give, as text.
+fn bound_names(reading: &cuelight_core::Reading) -> Vec<String> {
+    let mut names: Vec<String> = reading
+        .map
+        .iter()
+        .flat_map(|map| map.values())
+        .chain(reading.default.iter())
+        .filter_map(|value| match value {
+            cuelight_core::Value::Text(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 #[cfg(test)]
@@ -385,6 +427,44 @@ mod tests {
                     LayerPath::new(Root::Scene(0), [0])
                 ),
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    #[test]
+    fn what_a_binding_can_switch_to_is_used() {
+        let show: Show = serde_json::from_str(
+            r##"{ "format": 1, "name": "t", "size": [8, 8],
+              "fonts": { "plain": { "file": "tiny" }, "loud": { "file": "big" } },
+              "layers": [
+                { "name": "pic", "type": "image", "image": "a",
+                  "bindings": [{ "property": "image", "variable": "who", "map": { "1": "a", "2": "b" } }] },
+                { "name": "beep", "type": "audio", "sound": "x",
+                  "bindings": [{ "property": "sound", "variable": "which", "map": { "1": "x", "2": "y" }, "default": "z" }] },
+                { "name": "word", "type": "text", "font": "plain", "text": "hi",
+                  "bindings": [{ "property": "font", "variable": "mood", "map": { "up": "loud" } }] }
+              ] }"##,
+        )
+        .unwrap();
+        let uses = uses_in(&show);
+        let hows = |what: Ref| -> Vec<String> {
+            uses.get(&what)
+                .map(|u| u.iter().map(|u| u.how.clone()).collect())
+                .unwrap_or_default()
+        };
+        assert!(hows(Ref::Artwork("b".to_owned())).contains(&"bound to who".to_owned()));
+        assert!(hows(Ref::Sound("y".to_owned())).contains(&"bound to which".to_owned()));
+        assert!(
+            hows(Ref::Sound("z".to_owned())).contains(&"bound to which".to_owned()),
+            "the default too"
+        );
+        assert!(
+            !hows(Ref::Font("big".to_owned())).is_empty(),
+            "a style the font can switch to"
         );
     }
 }

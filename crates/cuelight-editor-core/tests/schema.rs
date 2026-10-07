@@ -198,3 +198,73 @@ fn every_field_set_is_what_the_engine_reads() {
     }
     assert!(checked > 30, "only {checked} checked");
 }
+
+#[test]
+fn every_show_key_is_a_setting_or_left_to_a_named_part() {
+    let schema = serde_json::to_value(schemars::schema_for!(cuelight_core::Show)).unwrap();
+    let defs = &schema["$defs"];
+    let keys = |node: &Value| -> Vec<String> {
+        resolve(defs, node)["properties"]
+            .as_object()
+            .map(|p| p.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    let output = schema["properties"]["output"]
+        .get("$ref")
+        .map(|_| schema["properties"]["output"].clone())
+        .or_else(|| schema["properties"]["output"]["allOf"].get(0).cloned())
+        .unwrap();
+    assert!(keys(&output).len() >= 5, "the output's keys are read");
+    let settings: BTreeSet<Vec<&str>> = fields::SHOW_FIELDS
+        .iter()
+        .map(|f| f.path.to_vec())
+        .collect();
+    let elsewhere: BTreeSet<&str> = fields::SHOW_ELSEWHERE.iter().map(|(key, _)| *key).collect();
+    let mut missing = Vec::new();
+    for key in keys(&schema) {
+        let set = settings.iter().any(|path| path[0] == key);
+        if !(set || elsewhere.contains(key.as_str())) {
+            missing.push(key);
+        }
+    }
+    for key in keys(&output) {
+        if !(settings.contains(&vec!["output", key.as_str()]) || elsewhere.contains(key.as_str())) {
+            missing.push(format!("output.{key}"));
+        }
+    }
+    assert!(missing.is_empty(), "show keys nobody edits: {missing:?}");
+}
+
+#[test]
+fn every_show_setting_set_is_what_the_engine_reads() {
+    for field in fields::SHOW_FIELDS {
+        let show = json!({"format": 1, "name": "t", "size": [64, 32]});
+        let mut document = Document::parse(&serde_json::to_string_pretty(&show).unwrap()).unwrap();
+        let set = value(field.input);
+        fields::set(&mut document, &Pointer::default(), field, set.clone()).unwrap();
+
+        let mut engine = Engine::new();
+        engine.load_show(&document.text()).unwrap();
+        let loaded = serde_json::to_value(engine.show().unwrap()).unwrap();
+        let read = fields::read(&loaded, field);
+        let same = match (read, &set) {
+            (Some(Value::Array(a)), Value::Array(b)) => {
+                a.iter().zip(b).all(|(x, y)| x.as_f64() == y.as_f64())
+            }
+            (Some(read), set) => {
+                read.as_str().map(str::to_uppercase) == set.as_str().map(str::to_uppercase)
+            }
+            (None, _) => false,
+        };
+        assert!(
+            same,
+            "show {}: set {set}, the engine reads {read:?}",
+            field.label
+        );
+        assert!(
+            !fields::is_default(&Value::Null, field, &set),
+            "{} is not its default",
+            field.label
+        );
+    }
+}

@@ -549,6 +549,17 @@ struct Target {
     bind_group: wgpu::BindGroup,
 }
 
+/// The blit shader, its checkerboard greys in the window's encoding:
+/// linear values for an sRGB window, which encodes them on the way out.
+fn blit(srgb: bool) -> String {
+    let grey = |level: f32| {
+        let level = if srgb { level.powf(2.2) } else { level };
+        format!("{level:.4}")
+    };
+    BLIT.replace("CHECKER_LIGHT", &grey(0.30))
+        .replace("CHECKER_DARK", &grey(0.22))
+}
+
 const BLIT: &str = r#"
 @group(0) @binding(0) var frame: texture_2d<f32>;
 @group(0) @binding(1) var frame_sampler: sampler;
@@ -565,8 +576,15 @@ struct Vertex { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
     return Vertex(vec4<f32>(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0), uv);
 }
 
+// The frame over a checkerboard, so what the show leaves see-through
+// (a background with alpha) reads as such; vello's pixels are not
+// premultiplied. Always opaque: the window is never see-through.
 @fragment fn fs(vertex: Vertex) -> @location(0) vec4<f32> {
-    return textureSample(frame, frame_sampler, vertex.uv);
+    let pixel = textureSample(frame, frame_sampler, vertex.uv);
+    let cell = vec2<u32>(vertex.position.xy) / 8u;
+    let light = ((cell.x + cell.y) & 1u) == 0u;
+    let checker = vec3<f32>(select(CHECKER_DARK, CHECKER_LIGHT, light));
+    return vec4<f32>(mix(checker, pixel.rgb, pixel.a), 1.0);
 }
 "#;
 
@@ -590,7 +608,7 @@ impl shader::Pipeline for Pipeline {
 
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuelight-stage-blit"),
-            source: wgpu::ShaderSource::Wgsl(BLIT.into()),
+            source: wgpu::ShaderSource::Wgsl(blit(format.is_srgb()).into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cuelight-stage-blit"),

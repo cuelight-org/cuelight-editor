@@ -54,9 +54,77 @@ fn shows_what_it_opened() {
     let _ = app.update(Message::Dropped(dir.into()));
     assert!(app.status.starts_with("opened "), "{}", app.status);
     let mut ui = simulator(app.view());
-    assert!(ui.find("mini (format 1)").is_ok());
-    assert!(ui.find("64 x 32").is_ok());
+    assert!(ui.find("show, format 1").is_ok());
+    assert_eq!(app.field_text("size"), Some("64, 32"));
     assert!(ui.find("Play").is_ok(), "an opened show is paused at 0");
+}
+
+#[test]
+fn the_show_is_picked_and_set_like_a_layer() {
+    let (mut app, _) = App::new();
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cuelight-editor-core/tests/fixtures/mini"
+    );
+    let _ = app.update(Message::Dropped(dir.into()));
+    let path = app.rows.iter().find_map(|row| match row {
+        cuelight_editor_core::tree::Row::Layer { path, .. } => Some(path.clone()),
+        _ => None,
+    });
+    let _ = app.update(Message::Choose(path.unwrap()));
+    assert_eq!(
+        app.field_text("background"),
+        None,
+        "a layer has no background"
+    );
+    // The tree's SHOW heading picks the show.
+    let mut ui = simulator(app.view());
+    let _ = ui.click("SHOW");
+    for message in ui.into_messages() {
+        let _ = app.update(message);
+    }
+    assert!(app.selection.is_empty());
+    let output = |app: &App| app.document.as_ref().unwrap().value()["output"].clone();
+
+    let _ = app.update(Message::PutField("scaling", "pixel_perfect".into()));
+    assert_eq!(output(&app)["scaling"], "pixel_perfect");
+    let engine = lock(&app.session.as_ref().unwrap().engine);
+    assert_eq!(engine.scaling(), cuelight_core::Scaling::PixelPerfect);
+    drop(engine);
+
+    // A default is not written down: the key goes.
+    let _ = app.update(Message::PutField("scaling", "smooth".into()));
+    assert!(output(&app).get("scaling").is_none(), "{}", output(&app));
+    assert!(
+        app.layer_fields
+            .iter()
+            .any(|f| f.field.label == "scaling" && !f.written)
+    );
+
+    // A colour field unfolds the same channel sliders as a property:
+    // dragging types, letting go writes.
+    let _ = app.update(Message::UnfoldField(Some("background")));
+    {
+        let mut ui = simulator(app.view());
+        assert!(
+            ui.find("R").is_ok() && ui.find("A").is_ok(),
+            "the channels show"
+        );
+    }
+    let _ = app.update(Message::TypeField("background", "#102030FF".into()));
+    let _ = app.update(Message::ApplyField("background"));
+    assert_eq!(
+        app.document.as_ref().unwrap().value()["background"],
+        "#102030FF"
+    );
+
+    // Typed, applied on leaving: the name.
+    let _ = app.update(Message::TypeField("name", "renamed".into()));
+    let _ = app.update(Message::Commit);
+    assert_eq!(app.document.as_ref().unwrap().value()["name"], "renamed");
+    // A show cannot do without its name: the reset is refused, and undone.
+    let _ = app.update(Message::ResetField("name"));
+    assert_eq!(app.document.as_ref().unwrap().value()["name"], "renamed");
 }
 
 #[test]
@@ -703,8 +771,8 @@ fn the_splits_between_the_areas_move() {
     let mut ui = simulator(app.view());
     assert!(ui.find("Fit").is_ok(), "the stage is in its pane");
     assert!(
-        ui.find("mini (format 1)").is_ok(),
-        "the summary is in its pane"
+        ui.find("show, format 1").is_ok(),
+        "the show's panel is in its pane"
     );
 }
 
@@ -1121,4 +1189,19 @@ fn examples() -> Option<std::path::PathBuf> {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../cuelight-examples")
         });
     dir.join("examples.json").exists().then_some(dir)
+}
+
+#[test]
+fn the_top_bar_names_the_show_by_its_folder_or_file() {
+    assert_eq!(
+        short_source("/home/me/shows/car_dashboard"),
+        "car_dashboard"
+    );
+    assert_eq!(
+        short_source("/home/me/shows/clock/show.json"),
+        "clock/show.json"
+    );
+    assert_eq!(short_source("C:\\shows\\deck.cuelight"), "deck.cuelight");
+    assert_eq!(short_source("deck.cuelight"), "deck.cuelight");
+    assert_eq!(short_source("show.json"), "show.json");
 }

@@ -33,8 +33,8 @@ impl App {
     }
 
     /// The layers as a tree: the show's own, then each scene's, groups'
-    /// children indented under them; the picked ones marked, the active
-    /// scene starred.
+    /// children indented under them; the picked ones marked (the show
+    /// while nothing is), the active scene starred.
     fn tree_panel<'a>(&'a self, session: &'a Session) -> Column<Element<'a, Message>> {
         let mut panel = Column::new().spacing(2).padding(12);
         let active = session.active_scene();
@@ -44,7 +44,17 @@ impl App {
                     root: cuelight_core::Root::Show,
                     ..
                 } => {
-                    panel = panel.push(container(text("SHOW").size(12)).padding([6, 0]).boxed());
+                    // The show's heading picks the show itself: its
+                    // settings in the inspector.
+                    let mut b = button(text("SHOW").size(12))
+                        .on_press(Message::Deselect)
+                        .width(Fill)
+                        .padding([6, 0])
+                        .style(button::text);
+                    if self.selection.is_empty() {
+                        b = b.style(button::secondary);
+                    }
+                    panel = panel.push(b.boxed());
                 }
                 // A scene's heading enters the scene.
                 Row::Root {

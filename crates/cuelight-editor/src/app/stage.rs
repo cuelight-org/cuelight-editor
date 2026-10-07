@@ -153,6 +153,7 @@ impl App {
     /// rather than replaces; a click on nothing clears.
     pub(super) fn pick(&mut self, under: Vec<LayerPath>, pick: Pick) {
         self.expanded = None;
+        self.unfolded_field = None;
         let Some(first) = under.first() else {
             if !pick.shift {
                 self.selection.clear();

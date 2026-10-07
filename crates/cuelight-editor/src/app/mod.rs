@@ -17,7 +17,7 @@ use iced::widget::pane_grid::{self, Axis, Configuration};
 use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::{
     button, center, column, container, image, responsive, row, scrollable, slider, space, svg,
-    text, toggler,
+    text, toggler, tooltip,
 };
 use iced::{Element, Fill, Font, Subscription, Task, Theme};
 
@@ -86,6 +86,10 @@ fn parse_point(text: &str) -> Result<[f64; 2], String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub static OPTIONS: std::sync::OnceLock<Options> = std::sync::OnceLock::new();
 
+/// What was typed into the field rows, label and text, for the layer it
+/// was typed for (`None` for the show).
+type TypedFields = (Option<LayerPath>, Vec<(&'static str, String)>);
+
 pub struct App {
     session: Option<Session>,
     /// A screenshot asked for on the command line, and the frames left
@@ -136,6 +140,8 @@ pub struct App {
     selection: Vec<LayerPath>,
     /// The inspector row unfolded to list every source of its value.
     expanded: Option<Property>,
+    /// The colour field whose channels are unfolded, by label.
+    unfolded_field: Option<&'static str>,
     /// What the show can be told.
     inputs: Inputs,
     /// Variable fields being typed into, before they are submitted.
@@ -178,11 +184,12 @@ pub struct App {
     bases: Vec<(Property, String)>,
     /// The picked layer's properties it writes; the rest are defaults.
     written: Vec<Property>,
-    /// The picked layer's other fields, as their rows show them. Kept
-    /// here because a row's field borrows its text.
+    /// The picked layer's other fields, or the show's settings while
+    /// nothing is picked, as their rows show them. Kept here because a
+    /// row's field borrows its text.
     layer_fields: Vec<editing::LayerField>,
-    /// What was typed into those rows, for the layer it was typed for.
-    field_typed: Option<(LayerPath, Vec<(&'static str, String)>)>,
+    /// What was typed into those rows.
+    field_typed: Option<TypedFields>,
     /// A number being dragged by its label.
     scrub: Option<editing::Scrub>,
     /// Whether the system asks for a light or a dark theme: iced draws
@@ -376,6 +383,8 @@ pub enum Message {
     Deselect,
     /// An inspector row unfolded, or all folded.
     Expand(Option<Property>),
+    /// A colour field's channels unfolded, or folded with `None`.
+    UnfoldField(Option<&'static str>),
     /// The log below the stage folded to its header, or unfolded.
     ToggleLog,
     /// A split between two areas dragged.
@@ -415,6 +424,7 @@ impl App {
             rows: Vec::new(),
             selection: Vec::new(),
             expanded: None,
+            unfolded_field: None,
             inputs: Inputs::default(),
             edits: BTreeMap::new(),
             fields: BTreeMap::new(),
@@ -880,16 +890,22 @@ impl App {
                 self.selection = vec![path];
                 self.selected = None;
                 self.expanded = None;
+                self.unfolded_field = None;
                 Task::none()
             }
             Message::Deselect => {
                 self.selection.clear();
                 self.selected = None;
                 self.expanded = None;
+                self.unfolded_field = None;
                 Task::none()
             }
             Message::Expand(property) => {
                 self.expanded = property;
+                Task::none()
+            }
+            Message::UnfoldField(label) => {
+                self.unfolded_field = label;
                 Task::none()
             }
             Message::Mode(mode) => {
@@ -1001,6 +1017,7 @@ impl App {
                 self.follow_scene = false;
                 self.selection.clear();
                 self.expanded = None;
+                self.unfolded_field = None;
                 self.typed = None;
                 self.owned = None;
                 self.scrub = None;
@@ -1179,9 +1196,18 @@ impl App {
                         .boxed(),
                 );
             }
-            bar = bar
-                .push(space::horizontal().width(16).boxed())
-                .push(text(&self.source).size(14).boxed());
+            bar = bar.push(space::horizontal().width(16).boxed()).push(
+                tooltip(
+                    text(short_source(&self.source))
+                        .size(14)
+                        .wrapping(text::Wrapping::None),
+                    container(text(&self.source).size(12))
+                        .padding(6)
+                        .style(container::bordered_box),
+                    tooltip::Position::Bottom,
+                )
+                .boxed(),
+            );
         }
 
         let body: Element<'_, Message> = match &self.session {
@@ -1264,6 +1290,19 @@ pub fn theme(app: &App) -> Theme {
 /// Ask for the system's light or dark preference.
 fn system_mode() -> Task<Message> {
     iced::system::theme().map(Message::Mode)
+}
+
+/// The open show's name as the top bar gives it: its folder or file,
+/// with the folder for a loose `show.json`; the whole path is in the
+/// bar's tooltip and the window's status line.
+fn short_source(source: &str) -> &str {
+    let mut parts = source.rsplitn(3, ['/', '\\']);
+    let last = parts.next().unwrap_or(source);
+    let Some(folder) = parts.next().filter(|_| last == "show.json") else {
+        return last;
+    };
+    let start = source.len() - last.len() - 1 - folder.len();
+    source.get(start..).unwrap_or(last)
 }
 
 #[cfg(test)]

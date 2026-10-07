@@ -104,8 +104,9 @@ pub struct Line {
     pub drawn: Option<Drawn>,
 }
 
-/// The line a font's row shows: enough to see the face.
-pub const SAMPLE: &str = "The quick brown fox jumps over the lazy dog 0123456789";
+/// What a font's row in the assets list shows in its thumbnail's place:
+/// enough to tell the face, as small as the other kinds' thumbnails.
+pub const SAMPLE: &str = "Aa";
 
 /// Printable ASCII in rows of sixteen, each row labelled by the code of
 /// its first character: what the specimen shows.

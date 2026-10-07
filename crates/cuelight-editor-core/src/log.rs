@@ -66,10 +66,14 @@ impl Line {
 #[derive(Debug, Default)]
 pub struct Log {
     lines: VecDeque<Line>,
+    /// Counts the changes, for a view to tell when to read the lines
+    /// again: their number stays the same once the cap is reached.
+    revision: u64,
 }
 
 impl Log {
     pub fn push(&mut self, line: Line) {
+        self.revision += 1;
         self.lines.push_back(line);
         while self.lines.len() > CAP {
             self.lines.pop_front();
@@ -97,7 +101,13 @@ impl Log {
     /// Drop the audit's lines, for an audit run again on a changed
     /// document; the rest stays.
     pub fn clear_audit(&mut self) {
+        self.revision += 1;
         self.lines.retain(|l| !matches!(l.kind, Kind::Audit(_)));
+    }
+
+    /// How many times the lines changed.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// What the audit says of one place: a file's path in the show, or a

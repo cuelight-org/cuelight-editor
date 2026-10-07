@@ -1055,7 +1055,7 @@ impl App {
                 let Some(session) = &self.session else {
                     return Task::none();
                 };
-                let under = lock(&session.engine).layers_at(point);
+                let under = self.layers_under(&lock(&session.engine), point);
                 self.pick(under, pick);
                 // A layer picked is what the inspector shows now.
                 self.selected = None;

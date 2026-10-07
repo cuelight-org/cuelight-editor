@@ -12,6 +12,7 @@ use iced::{Element, Fill, Size, Task};
 use super::{App, Message, Zoom};
 use crate::stage::{Pick, Stage};
 use cuelight_editor_core::session::Session;
+use cuelight_editor_core::tree::{self, Row};
 
 /// The stage's scroll pane, for the tasks that position it.
 const STAGE: &str = "stage";
@@ -184,6 +185,56 @@ impl App {
         }
     }
 
+    /// The layers under `point`, topmost first: what a press there would
+    /// hit, and a digits row anywhere in its box. A press takes a digits
+    /// row by its segments alone, which leaves the gaps between them
+    /// unpickable; the stage outlines the row's box, so a click there
+    /// picks it.
+    pub(super) fn layers_under(
+        &self,
+        engine: &cuelight::Engine,
+        point: [f64; 2],
+    ) -> Vec<LayerPath> {
+        let mut under = engine.layers_at(point);
+        let Some(show) = engine.show() else {
+            return under;
+        };
+        // Where each layer stands in the tree, which is the order they
+        // are drawn in: later is on top.
+        let place = |path: &LayerPath| {
+            self.rows
+                .iter()
+                .position(|row| matches!(row, Row::Layer { path: p, .. } if p == path))
+        };
+        for row in &self.rows {
+            let Row::Layer { path, .. } = row else {
+                continue;
+            };
+            let digits = tree::layer(show, path)
+                .is_some_and(|layer| matches!(layer.kind, cuelight_core::LayerKind::Digits { .. }));
+            if !digits || under.contains(path) {
+                continue;
+            }
+            let Some(bounds) = engine.bounds(path) else {
+                continue;
+            };
+            let [x, y, w, h] = bounds.rect;
+            let corners =
+                [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(|p| bounds.transform.apply(p));
+            if !inside(&corners, point) {
+                continue;
+            }
+            // Over what is drawn before it, under what is drawn after.
+            let here = place(path);
+            let at = under
+                .iter()
+                .position(|other| place(other) < here)
+                .unwrap_or(under.len());
+            under.insert(at, path.clone());
+        }
+        under
+    }
+
     /// The scale the stage draws at now.
     pub(super) fn scale(&self) -> f32 {
         match self.zoom {
@@ -230,4 +281,20 @@ impl App {
         self.scrolled = Some(to);
         scroll_to(STAGE, to, Animation::Instant)
     }
+}
+
+/// Whether `point` is inside the four `corners` of a box, turned or not.
+fn inside(corners: &[[f64; 2]; 4], [px, py]: [f64; 2]) -> bool {
+    let mut sign = 0.0_f64;
+    // Each corner with the next, the last with the first.
+    for (&[x1, y1], &[x2, y2]) in corners.iter().zip(corners.iter().cycle().skip(1)) {
+        let cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
+        if cross != 0.0 {
+            if sign != 0.0 && cross.signum() != sign {
+                return false;
+            }
+            sign = cross.signum();
+        }
+    }
+    true
 }

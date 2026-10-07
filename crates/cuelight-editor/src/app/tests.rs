@@ -1,4 +1,5 @@
 use super::*;
+use crate::stage::{Grip, Held};
 use cuelight_core::Value;
 use cuelight_editor_core::session::{Step, What};
 use iced_test::simulator;
@@ -1295,5 +1296,256 @@ fn the_shows_keys_variables_and_dots_are_set_from_its_inspector() {
             .is_none_or(|o| o.get("passes").is_none()),
         "{}",
         show(&app)
+    );
+}
+
+/// A show of `layers` on a 200 x 100 canvas, opened from a fresh folder.
+fn open_layers(layers: &str) -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("show.json"),
+        format!(
+            "{{\n  \"format\": 1,\n  \"name\": \"t\",\n  \"size\": [200, 100],\n  \"layers\": [\n    {layers}\n  ]\n}}\n"
+        ),
+    )
+    .unwrap();
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dir.path().into()));
+    assert!(app.status.starts_with("opened "), "{}", app.status);
+    (app, dir)
+}
+
+/// Drag what `grip` holds from `from` to each of `to` in turn, a frame
+/// after each, with `held`, and let go.
+fn drag(app: &mut App, grip: Grip, from: [f64; 2], to: &[[f64; 2]], held: Held) {
+    let _ = app.update(Message::Grab(grip, from));
+    for at in to {
+        let _ = app.update(Message::Drag(*at, held));
+        let _ = app.update(Message::DragApply);
+    }
+    let _ = app.update(Message::Release);
+}
+
+const NO_SNAP: Held = Held {
+    shift: false,
+    ctrl: true,
+};
+
+#[test]
+fn dragging_a_layer_moves_it_in_one_undo_step() {
+    let (mut app, _dir) = open_copy();
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    let _ = app.update(Message::Choose(group.clone()));
+    let _ = app.update(Message::Grab(Grip::Move, [32.0, 14.0]));
+    let _ = app.update(Message::Drag([35.0, 16.4], NO_SNAP));
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(32.0)));
+    let _ = app.update(Message::DragApply);
+    // Whole pixels: the place follows the pointer, rounded.
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(35.0)));
+    assert_eq!(base(&app, &group, Property::Y), Some(Value::Number(16.0)));
+    let _ = app.update(Message::Drag([42.0, 21.0], NO_SNAP));
+    let _ = app.update(Message::Release);
+    let doc = app.document.as_ref().unwrap().value();
+    assert_eq!(doc["layers"][1]["x"], 42);
+    assert_eq!(doc["layers"][1]["y"], 21);
+    assert!(app.grab.is_none());
+
+    let _ = app.update(Message::Undo);
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(32.0)));
+    assert!(
+        !app.document.as_ref().unwrap().is_dirty(),
+        "the whole drag undone"
+    );
+}
+
+#[test]
+fn a_drag_back_to_where_it_began_leaves_nothing() {
+    let (mut app, _dir) = open_copy();
+    let floor = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(floor.clone()));
+    let _ = app.update(Message::Grab(Grip::Move, [10.0, 27.0]));
+    let _ = app.update(Message::Drag([15.0, 27.0], NO_SNAP));
+    let _ = app.update(Message::DragApply);
+    assert_eq!(base(&app, &floor, Property::X), Some(Value::Number(5.0)));
+    let _ = app.update(Message::Drag([10.0, 27.0], NO_SNAP));
+    let _ = app.update(Message::Release);
+    let document = app.document.as_ref().unwrap();
+    assert!(
+        document.value()["layers"][0].get("x").is_none(),
+        "the default is not written"
+    );
+    assert!(document.value()["layers"][0].get("y").is_none());
+    assert!(!document.is_dirty(), "back where it started");
+}
+
+#[test]
+fn a_layer_in_a_turned_scaled_group_moves_in_the_groups_units() {
+    let (mut app, _dir) = open_layers(
+        r##"{"name": "g", "type": "group", "x": 100, "y": 50, "rotation": 90, "scale": 2,
+      "children": [{"name": "r", "type": "shape", "x": 5, "shape": {"rect": [0, 0, 10, 10]}, "fill": "#FFFFFF"}]}"##,
+    );
+    let r = LayerPath::new(cuelight_core::Root::Show, [0, 0]);
+    let _ = app.update(Message::Choose(r.clone()));
+    // Down the canvas is along the group's x, at half the distance.
+    drag(&mut app, Grip::Move, [90.0, 65.0], &[[90.0, 85.0]], NO_SNAP);
+    let doc = app.document.as_ref().unwrap().value();
+    assert_eq!(doc["layers"][0]["children"][0]["x"], 15);
+    assert!(doc["layers"][0]["children"][0].get("y").is_none());
+}
+
+#[test]
+fn the_arrow_keys_nudge_the_picked_layer() {
+    let (mut app, _dir) = open_copy();
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    let _ = app.update(Message::Choose(group.clone()));
+    let key = |named| keyboard::Key::Named(named);
+    let _ = app.update(Message::KeyPressed(
+        key(keyboard::key::Named::ArrowRight),
+        keyboard::Modifiers::empty(),
+    ));
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(33.0)));
+    let _ = app.update(Message::KeyPressed(
+        key(keyboard::key::Named::ArrowDown),
+        keyboard::Modifiers::SHIFT,
+    ));
+    assert_eq!(base(&app, &group, Property::Y), Some(Value::Number(24.0)));
+    // A key is one step.
+    let _ = app.update(Message::Undo);
+    assert_eq!(base(&app, &group, Property::Y), Some(Value::Number(14.0)));
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(33.0)));
+    // With nothing picked the arrows are the show's, or nothing.
+    let _ = app.update(Message::Deselect);
+    let before = app.document.as_ref().unwrap().text();
+    let _ = app.update(Message::KeyPressed(
+        key(keyboard::key::Named::ArrowLeft),
+        keyboard::Modifiers::empty(),
+    ));
+    assert_eq!(app.document.as_ref().unwrap().text(), before);
+}
+
+const RECT: &str = r##"{"name": "r", "type": "shape", "x": 10, "y": 10, "shape": {"rect": [0, 0, 20, 10]}, "fill": "#FFFFFF"}"##;
+
+#[test]
+fn a_corner_scales_and_shift_keeps_proportions() {
+    let (mut app, _dir) = open_layers(RECT);
+    let r = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(r.clone()));
+    drag(
+        &mut app,
+        Grip::Scale,
+        [30.0, 20.0],
+        &[[50.0, 25.0]],
+        Held::default(),
+    );
+    let doc = |app: &App| app.document.as_ref().unwrap().value()["layers"][0].clone();
+    assert_eq!(doc(&app)["scale_x"], 2);
+    assert_eq!(doc(&app)["scale_y"], 1.5);
+    let _ = app.update(Message::Undo);
+    let shift = Held {
+        shift: true,
+        ctrl: false,
+    };
+    drag(&mut app, Grip::Scale, [30.0, 20.0], &[[50.0, 30.0]], shift);
+    assert_eq!(doc(&app)["scale_x"], 2);
+    assert_eq!(doc(&app)["scale_y"], 2);
+}
+
+#[test]
+fn the_knob_turns_and_shift_turns_in_steps() {
+    let (mut app, _dir) = open_layers(RECT);
+    let r = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(r.clone()));
+    drag(
+        &mut app,
+        Grip::Turn,
+        [20.0, 10.0],
+        &[[10.0, 20.0]],
+        Held::default(),
+    );
+    assert_eq!(
+        base(&app, &r, Property::Rotation),
+        Some(Value::Number(90.0))
+    );
+    let _ = app.update(Message::Undo);
+    // 40 degrees down, in steps of 15.
+    let shift = Held {
+        shift: true,
+        ctrl: false,
+    };
+    let to = [
+        10.0 + 10.0 * 40f64.to_radians().cos(),
+        10.0 + 10.0 * 40f64.to_radians().sin(),
+    ];
+    drag(&mut app, Grip::Turn, [20.0, 10.0], &[to], shift);
+    assert_eq!(
+        base(&app, &r, Property::Rotation),
+        Some(Value::Number(45.0))
+    );
+}
+
+#[test]
+fn a_moving_layer_snaps_to_edges_and_shows_the_guides() {
+    let (mut app, _dir) = open_layers(&format!(
+        "{RECT},\n    {}",
+        r##"{"name": "other", "type": "shape", "x": 100, "y": 60, "shape": {"rect": [0, 0, 20, 20]}, "fill": "#FFFFFF"}"##
+    ));
+    let r = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(r.clone()));
+    // Its right edge 2 short of the other's left: it lines up, and the
+    // stage shows the line.
+    let _ = app.update(Message::Grab(Grip::Move, [20.0, 15.0]));
+    let _ = app.update(Message::Drag([88.0, 33.0], Held::default()));
+    let _ = app.update(Message::DragApply);
+    assert_eq!(app.grab.as_ref().unwrap().guides, [Some(100.0), None]);
+    let _ = app.update(Message::Release);
+    assert_eq!(base(&app, &r, Property::X), Some(Value::Number(80.0)));
+    assert_eq!(base(&app, &r, Property::Y), Some(Value::Number(28.0)));
+    let _ = app.update(Message::Undo);
+    // With Ctrl it goes where the pointer does.
+    drag(&mut app, Grip::Move, [20.0, 15.0], &[[88.0, 33.0]], NO_SNAP);
+    assert_eq!(base(&app, &r, Property::X), Some(Value::Number(78.0)));
+    // The canvas's middle: the box's middle at 100.
+    let _ = app.update(Message::Undo);
+    drag(
+        &mut app,
+        Grip::Move,
+        [20.0, 15.0],
+        &[[99.0, 15.0]],
+        Held::default(),
+    );
+    assert_eq!(base(&app, &r, Property::X), Some(Value::Number(90.0)));
+}
+
+#[test]
+fn a_drag_on_what_a_timeline_owns_asks_when_it_lets_go() {
+    let (mut app, _dir) = open_copy();
+    let dot = LayerPath::new(cuelight_core::Root::Show, [1, 0]);
+    // Before the hop runs, its timeline owns nothing: the drag writes.
+    let _ = app.update(Message::Choose(dot.clone()));
+    drag(&mut app, Grip::Move, [32.0, 14.0], &[[37.0, 14.0]], NO_SNAP);
+    assert!(app.owned.is_none());
+    assert_eq!(base(&app, &dot, Property::X), Some(Value::Number(5.0)));
+    let _ = app.update(Message::Undo);
+    // The hop runs: its timeline owns the dot's y now.
+    let _ = app.update(Message::Fire("go".to_owned()));
+    drag(&mut app, Grip::Move, [32.0, 14.0], &[[37.0, 14.0]], NO_SNAP);
+    assert!(
+        !app.document.as_ref().unwrap().is_dirty(),
+        "nothing written yet"
+    );
+    let owned = app.owned.as_ref().expect("a question");
+    assert_eq!(owned.owner, "timeline hop");
+    assert_eq!(owned.names(), "x and y");
+    {
+        let mut ui = simulator(app.view());
+        assert!(ui.find("Edit base").is_ok());
+    }
+    let _ = app.update(Message::EditOwned);
+    let doc = app.document.as_ref().unwrap().value();
+    assert_eq!(doc["layers"][1]["children"][0]["x"], 5);
+    let _ = app.update(Message::Undo);
+    assert!(
+        !app.document.as_ref().unwrap().is_dirty(),
+        "one step, like the drag"
     );
 }

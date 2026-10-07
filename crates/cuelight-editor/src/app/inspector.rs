@@ -81,8 +81,9 @@ impl App {
                 container(
                     column![
                         text(format!(
-                            "{} is set by {} at the playhead: a new base value shows once it lets go.",
-                            tree::property_name(owned.property),
+                            "{} {} set by {} at the playhead: a new base value shows once it lets go.",
+                            owned.names(),
+                            if owned.names().contains(" and ") { "are" } else { "is" },
                             owned.owner
                         ))
                         .size(12),

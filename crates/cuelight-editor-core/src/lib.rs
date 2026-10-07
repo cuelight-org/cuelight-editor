@@ -12,6 +12,7 @@ pub mod inputs;
 pub mod lists;
 pub mod log;
 pub mod opened;
+pub mod placement;
 pub mod save;
 pub mod session;
 pub mod specimen;

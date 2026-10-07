@@ -37,11 +37,27 @@ pub(super) struct LayerField {
 /// property at the playhead: a new base would not show until it lets go.
 #[derive(Debug, Clone)]
 pub(super) struct Owned {
+    /// The layer the inspector asks on.
     pub path: LayerPath,
-    pub property: Property,
-    pub value: serde_json::Value,
+    /// Each base value it would set, by layer and property: one typed
+    /// value, or what a drag on the stage left.
+    pub edits: Vec<(LayerPath, Property, serde_json::Value)>,
     /// What owns it, in words: `timeline enter`, `binding on speed`.
     pub owner: String,
+}
+
+impl Owned {
+    /// The properties it would set, in words: `x and y`.
+    pub fn names(&self) -> String {
+        let mut names: Vec<String> = Vec::new();
+        for (_, property, _) in &self.edits {
+            let name = tree::property_name(*property);
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names.join(" and ")
+    }
 }
 
 impl App {
@@ -303,9 +319,8 @@ impl App {
         };
         if let Some(owner) = self.owner(&path, property) {
             self.owned = Some(Owned {
+                edits: vec![(path.clone(), property, value)],
                 path,
-                property,
-                value,
                 owner,
             });
             return Task::none();
@@ -330,14 +345,18 @@ impl App {
 
     /// Set the base value anyway, after the question.
     pub(super) fn edit_owned(&mut self) -> Task<Message> {
-        if let Some(Owned {
-            path,
-            property,
-            value,
-            ..
-        }) = self.owned.take()
-        {
+        let Some(owned) = self.owned.take() else {
+            return Task::none();
+        };
+        // What a drag left is one step, like the drag.
+        if let Some(document) = &mut self.document {
+            document.begin_step();
+        }
+        for (path, property, value) in owned.edits {
             self.edit_base(&path, property, value);
+        }
+        if let Some(document) = &mut self.document {
+            document.end_step();
         }
         Task::none()
     }
@@ -667,7 +686,7 @@ impl App {
 
     /// The document's pointer to the layer at `path`, if the document
     /// has that layer where the show does.
-    fn layer_pointer(&self, path: &LayerPath) -> Option<Pointer> {
+    pub(super) fn layer_pointer(&self, path: &LayerPath) -> Option<Pointer> {
         let session = self.session.as_ref()?;
         let engine = lock(&session.engine);
         self.pointer_in(engine.show()?, path)

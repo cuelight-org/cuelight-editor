@@ -27,7 +27,12 @@ The inputs panel is how a show is driven: its triggers as buttons, its
 variables as fields and toggles, its own values as readouts, and what
 happened lately. Keys the show names go to the show first (Ctrl reaches
 the editor's own shortcuts); a click on the stage picks the layer under
-it, and Ctrl-click is the show's own press. A show opens paused at 0,
+it, and Ctrl-click is the show's own press. Drag a picked layer to move
+it, a corner of its box to scale it (Shift keeps proportions) and the
+round knob to turn it (Shift in steps of 15 degrees); the arrow keys
+nudge it a pixel, ten with Shift. A move snaps to the canvas's edges and
+middle and to other layers' edges, with a guide; Ctrl lets go of the
+snapping. Each drag or key is one undo step. A show opens paused at 0,
 and anything you fire by hand starts it; what you fire is recorded, so
 scrubbing back replays it. The Driver switch in the bar turns the show's
 own driver off, so nothing happens until you make it.

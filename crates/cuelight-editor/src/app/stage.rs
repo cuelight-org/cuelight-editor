@@ -68,8 +68,12 @@ impl App {
             engine: session.engine.clone(),
             revision: session.revision,
             selection: self.selection.clone(),
+            guides: self.grab.as_ref().map_or([None, None], |grab| grab.guides),
             on_pick: Message::Pick,
             on_press: Message::Press,
+            on_grab: Message::Grab,
+            on_drag: Message::Drag,
+            on_release: || Message::Release,
             whole: Default::default(),
         }
         .widget(w, h);

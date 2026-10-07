@@ -1841,6 +1841,9 @@ fn open_with_assets(show: &str) -> (App, tempfile::TempDir) {
     std::fs::write(dir.path().join("assets/sounds/ding.wav"), silence()).unwrap();
     std::fs::create_dir_all(dir.path().join("assets/videos")).unwrap();
     std::fs::write(dir.path().join("assets/videos/clip.webm"), b"not decoded").unwrap();
+    let dot = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cuelight-editor-core/tests/fixtures/mini/assets/dot.png");
+    std::fs::copy(dot, dir.path().join("assets/dot.png")).unwrap();
     std::fs::write(dir.path().join("show.json"), show).unwrap();
     let (mut app, _) = App::new();
     let _ = app.update(Message::Dropped(dir.path().into()));
@@ -1914,6 +1917,7 @@ fn a_show_with_one_layer_of_each_kind_is_built_from_empty() {
             "shape path",
             "text text",
             "digits digits",
+            "image dot",
             "group group",
             "audio ding",
             "video clip",
@@ -1921,7 +1925,7 @@ fn a_show_with_one_layer_of_each_kind_is_built_from_empty() {
     );
     // Each was one step.
     let _ = app.update(Message::Undo);
-    assert_eq!(app.rows.len(), 9);
+    assert_eq!(app.rows.len(), 10);
     let _ = app.update(Message::Redo);
     // Saved, it opens again without a word against it.
     let _ = app.update(Message::Save);

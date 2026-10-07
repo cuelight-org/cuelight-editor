@@ -42,6 +42,17 @@ impl App {
                     .height(THUMB)
                     .content_fit(ContentFit::Contain)
                     .boxed(),
+                // A font draws its sample in itself, as large as the
+                // thumbnail takes.
+                None if let Some(Some(faces)) = self.faces.get(i) => {
+                    container(self.face(&faces.sample, specimen::SAMPLE, 4.0, Some(THUMB * 0.7)))
+                        .width(THUMB)
+                        .height(THUMB)
+                        .center_x(THUMB)
+                        .center_y(THUMB)
+                        .clip(true)
+                        .boxed()
+                }
                 None => container(text(kind_mark(asset.kind)).size(16))
                     .width(THUMB)
                     .height(THUMB)
@@ -54,17 +65,7 @@ impl App {
             if playing {
                 facts.push_str(", playing");
             }
-            let mut about = column![text(&asset.name).size(14), text(facts).size(12)].spacing(2);
-            if let Some(Some(faces)) = self.faces.get(i) {
-                // The sample at the size the show uses the font at, as
-                // tall as a row allows; what does not fit is cut off.
-                about = about.push(
-                    container(self.face(&faces.sample, specimen::SAMPLE, 1.0, Some(SAMPLE_HEIGHT)))
-                        .width(Fill)
-                        .clip(true)
-                        .boxed(),
-                );
-            }
+            let about = column![text(&asset.name).size(14), text(facts).size(12)].spacing(2);
             let line = row![thumb, about].spacing(8).align_y(iced::Center);
             let mut b = button(line)
                 .on_press(Message::Select(Some(i)))
@@ -73,19 +74,7 @@ impl App {
             if self.selected == Some(i) {
                 b = b.style(button::secondary);
             }
-            if asset.kind == Kind::Sound {
-                // Played once from here, outside the show's clock; the
-                // same press stops it. Nothing to press when there is no
-                // sound to be had.
-                let mut play = button(text(if playing { "stop" } else { "play" }).size(12))
-                    .style(button::secondary);
-                if self.can_play() {
-                    play = play.on_press(Message::Preview(i));
-                }
-                panel = panel.push(row![b, play].spacing(4).align_y(iced::Center).boxed());
-            } else {
-                panel = panel.push(b.boxed());
-            }
+            panel = panel.push(b.boxed());
         }
         panel
     }
@@ -221,12 +210,16 @@ impl App {
                     .map(|v| format!("video, {:.2} s, {} x {}", v.duration, v.width, v.height)),
                 _ => None,
             };
-            column![
+            let mut panel = column![
                 text(&asset.name).size(16),
                 text(facts.unwrap_or_else(|| asset.kind.name().to_owned())).size(12)
             ]
             .spacing(4)
-            .padding(12)
+            .padding(12);
+            if asset.kind == Kind::Sound {
+                panel = panel.push(self.play_button(i));
+            }
+            panel
         };
         let heading = |label: &'a str| container(text(label).size(12)).padding([6, 0]);
 
@@ -335,9 +328,6 @@ impl App {
         panel
     }
 }
-
-/// The tallest a font's sample line is drawn in its row.
-const SAMPLE_HEIGHT: f32 = 48.0;
 
 impl App {
     /// A picked font: every printable character at each size the show
@@ -470,6 +460,28 @@ impl App {
             }
             Face::Nothing => text("none of these characters").size(12).boxed(),
         }
+    }
+}
+
+impl App {
+    /// A sound played once from its preview, outside the show's clock;
+    /// the same press stops it. Without a sound output, why not.
+    fn play_button<'a>(&self, i: usize) -> Element<'a, Message> {
+        if !self.can_play() {
+            let why = if cfg!(target_arch = "wasm32") {
+                "No sound output: the browser gave the page none."
+            } else {
+                "No sound output: the editor was started with --silent, or found no sound device."
+            };
+            return text(why).size(12).boxed();
+        }
+        let playing = self.preview.as_ref().is_some_and(|p| p.index == i);
+        container(
+            button(text(if playing { "Stop" } else { "Play" }).size(13))
+                .on_press(Message::Preview(i)),
+        )
+        .padding([6, 0])
+        .boxed()
     }
 }
 

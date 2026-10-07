@@ -1205,3 +1205,29 @@ fn the_top_bar_names_the_show_by_its_folder_or_file() {
     assert_eq!(short_source("deck.cuelight"), "deck.cuelight");
     assert_eq!(short_source("show.json"), "show.json");
 }
+
+#[test]
+fn a_sound_is_played_from_its_preview_or_says_why_not() {
+    let Some(dashboard) = examples().map(|e| e.join("demos/car_dashboard")) else {
+        eprintln!("no cuelight-examples checkout: the sound preview is not tried");
+        return;
+    };
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dashboard));
+    // As started with --silent, whatever this machine has.
+    app.audio = None;
+    let _ = app.update(Message::Tab(Tab::Assets));
+    let sound = app
+        .library
+        .iter()
+        .position(|a| a.kind == cuelight_editor_core::assets::Kind::Sound);
+    let _ = app.update(Message::Select(sound));
+    let mut ui = simulator(app.view());
+    // The list has no play button; the preview, without a sound output
+    // here, says why there is none.
+    assert!(ui.find("play").is_err());
+    assert!(
+        ui.find("No sound output: the editor was started with --silent, or found no sound device.")
+            .is_ok()
+    );
+}

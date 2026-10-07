@@ -30,7 +30,7 @@ cuelight-loader = { git = "https://github.com/cuelight-org/cuelight", rev = "555
 cuelight-audio = { git = "https://github.com/cuelight-org/cuelight", rev = "5553103fcf397f097f26ef2cf85699a55bcd7f8e", default-features = false }
 # iced is unreleased on the wgpu the engine uses (30), so it is pinned to
 # a commit of master on wgpu 30 that we checked.
-iced = { git = "https://github.com/iced-rs/iced", rev = "fc0c3ba73dad424e0560dab1f0477aae077c2442", features = ["image-without-codecs", "svg"] }
+iced = { git = "https://github.com/iced-rs/iced", rev = "fc0c3ba73dad424e0560dab1f0477aae077c2442", features = ["advanced", "image-without-codecs", "svg"] }
 iced_test = { git = "https://github.com/iced-rs/iced", rev = "fc0c3ba73dad424e0560dab1f0477aae077c2442" }
 log = "0.4"
 serde_json = { version = "1", features = ["preserve_order"] }

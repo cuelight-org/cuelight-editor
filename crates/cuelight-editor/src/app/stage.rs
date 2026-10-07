@@ -6,7 +6,7 @@ use iced::widget::Widget as _;
 use iced::widget::operation::Animation;
 use iced::widget::operation::scrollable::{scroll_to, snap_to};
 use iced::widget::scrollable::{AbsoluteOffset, Direction, RelativeOffset, Scrollbar};
-use iced::widget::{Column, button, column, container, row, scrollable, shader, space, text};
+use iced::widget::{Column, button, column, container, row, scrollable, space, text};
 use iced::{Element, Fill, Size, Task};
 
 use super::{App, Message, Zoom};
@@ -64,15 +64,15 @@ impl App {
         .spacing(6)
         .align_y(iced::Center);
 
-        let stage = shader(Stage {
+        let stage = Stage {
             engine: session.engine.clone(),
             revision: session.revision,
             selection: self.selection.clone(),
             on_pick: Message::Pick,
             on_press: Message::Press,
-        })
-        .width(w)
-        .height(h);
+            whole: Default::default(),
+        }
+        .widget(w, h);
         // The pane fills the room, with the margin outside it, and is
         // positioned by the tasks that centre it and keep the middle on
         // a zoom.
@@ -187,11 +187,9 @@ impl App {
         }
     }
 
-    /// A zoom to `scale`, kept between the smallest and the largest the
-    /// stage can draw: vello stops past a frame of about 4096 x 4096
-    /// physical pixels, whatever the show's size.
+    /// A zoom to `scale`, kept between the smallest and the largest.
     pub(super) fn zoom_to(&self, scale: f32) -> Zoom {
-        Zoom::Scale(scale.clamp(Zoom::MIN, self.max_zoom()))
+        Zoom::Scale(scale.clamp(Zoom::MIN, Zoom::MAX))
     }
 
     /// Put the show in the middle of the stage: what a fresh open and a
@@ -216,21 +214,5 @@ impl App {
         };
         self.scrolled = Some(to);
         scroll_to(STAGE, to, Animation::Instant)
-    }
-
-    /// The largest zoom whose frame vello still draws.
-    fn max_zoom(&self) -> f32 {
-        let [w, h] = self.summary.size.map(|n| n.max(1) as f32);
-        let frame = |scale: f32| {
-            [
-                (w * scale * self.scale_factor).round() as u32,
-                (h * scale * self.scale_factor).round() as u32,
-            ]
-        };
-        let mut scale = Zoom::MAX;
-        while scale > Zoom::MIN && !crate::stage::drawable(frame(scale)) {
-            scale /= 1.02;
-        }
-        scale.max(Zoom::MIN)
     }
 }

@@ -151,9 +151,6 @@ pub struct App {
     panes: pane_grid::State<Pane>,
     /// How large the stage draws the show.
     zoom: Zoom,
-    /// Physical pixels per logical one, which bounds how far the stage
-    /// can zoom before its frame is more than vello draws.
-    scale_factor: f32,
     /// The scale that fits the show into the stage area, as the last
     /// layout found it: what zooming in or out starts from while fitted.
     fitted: Cell<f32>,
@@ -385,8 +382,6 @@ pub enum Message {
     Resized(pane_grid::ResizeEvent),
     /// The system's light or dark preference, found or changed.
     Mode(iced::theme::Mode),
-    /// The window's scale factor, found or changed.
-    Rescaled(f32),
     /// The window as drawn, for `--screenshot`.
     #[cfg(not(target_arch = "wasm32"))]
     Shot(iced::window::Screenshot),
@@ -452,7 +447,6 @@ impl App {
             layer_fields: Vec::new(),
             field_typed: None,
             mode: iced::theme::Mode::None,
-            scale_factor: 1.0,
             fitted: Cell::new(1.0),
             log_open: true,
             follow_scene: false,
@@ -806,10 +800,6 @@ impl App {
                 self.scrolled = Some(offset);
                 Task::none()
             }
-            Message::Rescaled(factor) => {
-                self.scale_factor = factor;
-                Task::none()
-            }
             #[cfg(not(target_arch = "wasm32"))]
             Message::Shot(shot) => {
                 let Some((path, _)) = self.screenshot.take() else {
@@ -1029,13 +1019,8 @@ impl App {
                 self.files = files;
                 self.document = Some(document);
                 self.session = Some(session);
-                // The window's scale factor bounds the zoom; ask once a
-                // window is there to ask.
-                let rescaled = iced::window::latest()
-                    .and_then(iced::window::scale_factor)
-                    .map(Message::Rescaled);
                 let centred = self.centre_stage();
-                Task::batch([task, fonts, rescaled, centred])
+                Task::batch([task, fonts, centred])
             }
             Err(error) => {
                 self.status = format!("could not open: {error}");
@@ -1052,15 +1037,7 @@ impl App {
             }
             _ => None,
         });
-        let rescaled = iced::window::events().filter_map(|(_, event)| match event {
-            iced::window::Event::Rescaled(factor) => Some(Message::Rescaled(factor)),
-            _ => None,
-        });
-        let mut subscriptions = vec![
-            keys,
-            rescaled,
-            iced::system::theme_changes().map(Message::Mode),
-        ];
+        let mut subscriptions = vec![keys, iced::system::theme_changes().map(Message::Mode)];
         #[cfg(not(target_arch = "wasm32"))]
         let waiting_to_shoot = self.session.is_some() && self.screenshot.is_some();
         #[cfg(target_arch = "wasm32")]

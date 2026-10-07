@@ -191,6 +191,11 @@ impl App {
             font,
             sound: first(assets::Kind::Sound),
             video: first(assets::Kind::Video),
+            artwork: self
+                .library
+                .iter()
+                .find(|a| matches!(a.kind, assets::Kind::Image | assets::Kind::Vector))
+                .map(|a| (a.name.clone(), a.kind == assets::Kind::Vector, a.size)),
             path: self.path_typed.clone().unwrap_or_default(),
         }
     }

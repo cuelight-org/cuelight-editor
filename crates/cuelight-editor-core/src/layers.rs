@@ -25,19 +25,22 @@ pub enum Kind {
     Path,
     Text,
     Digits,
+    /// A picture or SVG artwork from the show's assets.
+    Image,
     Group,
     Audio,
     Video,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Rectangle,
         Kind::RoundedRectangle,
         Kind::Circle,
         Kind::Path,
         Kind::Text,
         Kind::Digits,
+        Kind::Image,
         Kind::Group,
         Kind::Audio,
         Kind::Video,
@@ -52,6 +55,7 @@ impl Kind {
             Kind::Path => "Path",
             Kind::Text => "Text",
             Kind::Digits => "Digits",
+            Kind::Image => "Image",
             Kind::Group => "Group",
             Kind::Audio => "Audio",
             Kind::Video => "Video",
@@ -71,6 +75,9 @@ pub struct Making {
     pub sound: Option<String>,
     /// The first video, for a video layer.
     pub video: Option<String>,
+    /// The first picture or SVG artwork, for an image layer: its name,
+    /// whether it is SVG, and its size when known.
+    pub artwork: Option<(String, bool, Option<[f64; 2]>)>,
     /// SVG path data, for a path.
     pub path: String,
 }
@@ -114,6 +121,7 @@ pub fn unavailable(kind: Kind, making: &Making) -> Option<&'static str> {
         Kind::Text if making.font.is_none() => Some("the show has no fonts to write in"),
         Kind::Audio if making.sound.is_none() => Some("the show has no sounds to play"),
         Kind::Video if making.video.is_none() => Some("the show has no videos to show"),
+        Kind::Image if making.artwork.is_none() => Some("the show has no pictures or SVG artwork"),
         Kind::Path if making.path.trim().is_empty() => Some("a path needs its path data"),
         _ => None,
     }
@@ -153,6 +161,32 @@ pub fn new_layer(kind: Kind, making: &Making) -> Result<Value, String> {
                 "digits": 4, "size": [number(4.0 * cell), number(2.0 * cell)], "text": "1234",
                 "display": { "segments": { "style": "numeric7", "fill": "#FF5820", "unlit": "#2A0E05" } }
             })
+        }
+        // At its own size, or half the canvas when it is larger, its
+        // shape kept; an SVG layer names its artwork as `vector`.
+        Kind::Image => {
+            let (name, vector, size) = making.artwork.clone().unwrap_or_default();
+            let (key, kind) = if vector {
+                ("vector", "vector")
+            } else {
+                ("image", "image")
+            };
+            let mut layer =
+                json!({ "name": name, "type": kind, "x": x, "y": y, "anchor": "center" });
+            if let (Some([w, h]), Some(object)) = (size, layer.as_object_mut()) {
+                let room = [making.size[0] / 2.0, making.size[1] / 2.0];
+                let shrink = (room[0] / w.max(1.0)).min(room[1] / h.max(1.0));
+                if shrink < 1.0 {
+                    object.insert(
+                        "size".to_owned(),
+                        json!([number((w * shrink).round()), number((h * shrink).round())]),
+                    );
+                }
+            }
+            if let Some(object) = layer.as_object_mut() {
+                object.insert(key.to_owned(), Value::from(name));
+            }
+            layer
         }
         Kind::Group => json!({ "name": "group", "type": "group", "children": [] }),
         Kind::Audio => {
@@ -601,8 +635,38 @@ mod tests {
             font: Some("body".to_owned()),
             sound: Some("ding".to_owned()),
             video: None,
+            artwork: Some(("badge".to_owned(), false, Some([40.0, 40.0]))),
             path: "M 0 0 L 10 0 L 5 8 Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn an_image_keeps_its_size_or_shrinks_to_half_the_canvas() {
+        let small = new_layer(Kind::Image, &making()).unwrap();
+        assert_eq!(
+            small,
+            json!({"name": "badge", "type": "image", "x": 100, "y": 50, "anchor": "center", "image": "badge"})
+        );
+        let big = Making {
+            artwork: Some(("sky".to_owned(), true, Some([400.0, 100.0]))),
+            ..making()
+        };
+        let big = new_layer(Kind::Image, &big).unwrap();
+        assert_eq!(big["type"], "vector");
+        assert_eq!(big["vector"], "sky");
+        assert_eq!(
+            big["size"],
+            json!([100, 25]),
+            "half the canvas wide, its shape kept"
+        );
+        let none = Making {
+            artwork: None,
+            ..making()
+        };
+        assert_eq!(
+            new_layer(Kind::Image, &none).unwrap_err(),
+            "the show has no pictures or SVG artwork"
+        );
     }
 
     #[test]

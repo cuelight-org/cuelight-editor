@@ -1,6 +1,7 @@
 use super::*;
 use crate::stage::{Grip, Held};
 use cuelight_core::Value;
+use cuelight_editor_core::placement::ClipHandle;
 use cuelight_editor_core::session::{Step, What};
 use iced_test::simulator;
 
@@ -1510,6 +1511,86 @@ fn a_corner_scales_and_shift_keeps_proportions() {
     drag(&mut app, Grip::Scale, [30.0, 20.0], &[[50.0, 30.0]], shift);
     assert_eq!(doc(&app)["scale_x"], 2);
     assert_eq!(doc(&app)["scale_y"], 2);
+}
+
+const CLIPPED: &str = r##"{"name": "g", "type": "group", "x": 20, "y": 10, "clip": {"rect": [0, 0, 100, 50], "radius": 6},
+      "children": [{"name": "r", "type": "shape", "shape": {"rect": [0, 0, 200, 100]}, "fill": "#FFFFFF"}]}"##;
+
+#[test]
+fn a_clip_corner_resizes_the_clip_in_one_undo_step() {
+    let (mut app, _dir) = open_layers(CLIPPED);
+    let g = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(g.clone()));
+    let before = app.document.as_ref().unwrap().text();
+    // The bottom right corner, by whole pixels; the top left stays.
+    let corner = Grip::Clip(ClipHandle::Side([1, 1]));
+    drag(
+        &mut app,
+        corner,
+        [120.0, 60.0],
+        &[[110.0, 55.0], [130.4, 69.6]],
+        Held::default(),
+    );
+    let text = app.document.as_ref().unwrap().text();
+    assert!(
+        text.contains(r#""clip": {"rect": [0, 0, 110, 60], "radius": 6}"#),
+        "{text}"
+    );
+    // Where the group is and how it is scaled are not touched.
+    let doc = app.document.as_ref().unwrap().value();
+    assert_eq!(doc["layers"][0]["x"], 20);
+    assert!(doc["layers"][0].get("scale_x").is_none());
+    let _ = app.update(Message::Undo);
+    assert_eq!(app.document.as_ref().unwrap().text(), before);
+    // The left side, past the right: the rect turns round.
+    drag(
+        &mut app,
+        Grip::Clip(ClipHandle::Side([-1, 0])),
+        [20.0, 35.0],
+        &[[140.0, 35.0]],
+        Held::default(),
+    );
+    let doc = app.document.as_ref().unwrap().value();
+    assert_eq!(
+        doc["layers"][0]["clip"],
+        serde_json::json!({"rect": [100, 0, 20, 50], "radius": 6})
+    );
+}
+
+#[test]
+fn a_circle_clip_moves_by_its_centre() {
+    let (mut app, _dir) = open_layers(
+        r##"{"name": "g", "type": "group", "x": 50, "y": 50, "scale": 2, "clip": {"circle": [0, 0, 20]}, "children": []}"##,
+    );
+    let _ = app.update(Message::Choose(LayerPath::new(
+        cuelight_core::Root::Show,
+        [0],
+    )));
+    // On the canvas twice what it is in the group.
+    drag(
+        &mut app,
+        Grip::Clip(ClipHandle::Centre),
+        [50.0, 50.0],
+        &[[60.0, 44.0]],
+        Held::default(),
+    );
+    let doc = app.document.as_ref().unwrap().value();
+    assert_eq!(
+        doc["layers"][0]["clip"],
+        serde_json::json!({"circle": [5, -3, 20]})
+    );
+    drag(
+        &mut app,
+        Grip::Clip(ClipHandle::Rim),
+        [100.0, 44.0],
+        &[[120.0, 44.0]],
+        Held::default(),
+    );
+    let doc = app.document.as_ref().unwrap().value();
+    assert_eq!(
+        doc["layers"][0]["clip"],
+        serde_json::json!({"circle": [5, -3, 30]})
+    );
 }
 
 #[test]

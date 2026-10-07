@@ -16,6 +16,7 @@ use iced::widget::{
 use iced::{Element, Fill, Size, Theme};
 
 use super::{App, Message, Tab, theme};
+use cuelight_editor_core::lists::List;
 use cuelight_editor_core::opened::{self, Summary};
 use cuelight_editor_core::session::{Session, lock};
 
@@ -271,6 +272,7 @@ impl App {
             {
                 panel = panel.push(channels(
                     shown,
+                    true,
                     move |typed| Message::Type(property, typed),
                     Message::Apply(property),
                 ));
@@ -404,7 +406,8 @@ impl App {
         let shown = self.field_text(label);
         let fallback = field.default.as_str();
         // A colour's label, like its swatch, unfolds its channels.
-        let colour = field.editable && field.field.input == Input::Colour;
+        let alpha = field.field.input == Input::Colour;
+        let colour = field.editable && (alpha || field.field.input == Input::Opaque);
         let unfolded = colour && self.unfolded_field == Some(label);
         let unfold = Message::UnfoldField((!unfolded).then_some(label));
         let name: Element<'a, Message> = if colour {
@@ -465,10 +468,32 @@ impl App {
                     .on_toggle(move |on| Message::PutField(label, on.to_string()))
                     .size(14)
                     .boxed(),
-                Input::Colour => row![swatch(shown.unwrap_or(fallback), unfold), typed()]
-                    .spacing(4)
+                Input::Colour | Input::Opaque => {
+                    row![swatch(shown.unwrap_or(fallback), unfold), typed()]
+                        .spacing(4)
+                        .align_y(iced::Center)
+                        .boxed()
+                }
+                // A share slides from 0 to 1, the number beside it.
+                Input::Share => {
+                    let now = shown
+                        .unwrap_or(fallback)
+                        .parse::<f32>()
+                        .unwrap_or(0.0)
+                        .clamp(0.0, 1.0);
+                    row![
+                        slider(0.0..=1.0, now, move |v: f32| {
+                            Message::TypeField(label, format!("{:.2}", v))
+                        })
+                        .step(0.01)
+                        .on_release(Message::ApplyField(label))
+                        .width(Fill),
+                        typed().width(52),
+                    ]
+                    .spacing(6)
                     .align_y(iced::Center)
-                    .boxed(),
+                    .boxed()
+                }
                 Input::Number | Input::Count | Input::Pair | Input::Text => typed().boxed(),
             }
         };
@@ -488,6 +513,7 @@ impl App {
         if unfolded {
             rows = rows.push(channels(
                 shown.unwrap_or(fallback),
+                alpha,
                 move |typed| Message::TypeField(label, typed),
                 Message::ApplyField(label),
             ));
@@ -552,7 +578,7 @@ fn json_text<'a>(json: &str, theme: &Theme) -> Element<'a, Message> {
 
 /// A field's border: amber while what is typed waits to be applied (Enter,
 /// or moving on to another field), red while it does not read.
-fn field_style(
+pub(super) fn field_style(
     pending: bool,
     invalid: bool,
 ) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + Copy {
@@ -583,7 +609,7 @@ fn problem<'a>(error: String) -> Element<'a, Message> {
 
 /// The button that takes a written value back to its default, or the
 /// room it takes, so the rows line up.
-fn reset<'a>(on_press: Option<Message>) -> Element<'a, Message> {
+pub(super) fn reset<'a>(on_press: Option<Message>) -> Element<'a, Message> {
     match on_press {
         Some(message) => button(text("×").size(12))
             .on_press(message)
@@ -654,6 +680,7 @@ fn swatch<'a>(colour: &str, on_press: Message) -> Element<'a, Message> {
 /// (`apply`).
 fn channels<'a>(
     colour: &str,
+    alpha: bool,
     typed: impl Fn(String) -> Message + Clone + 'a,
     apply: Message,
 ) -> Element<'a, Message> {
@@ -661,7 +688,12 @@ fn channels<'a>(
     let mut sliders = Column::<Element<'a, Message>>::new()
         .spacing(2)
         .padding([2, 18]);
-    for (i, name) in ["R", "G", "B", "A"].into_iter().enumerate() {
+    let names: &[&str] = if alpha {
+        &["R", "G", "B", "A"]
+    } else {
+        &["R", "G", "B"]
+    };
+    for (i, name) in names.iter().copied().enumerate() {
         let value = now.get(i).copied().unwrap_or(255);
         sliders = sliders.push(
             row![
@@ -670,6 +702,9 @@ fn channels<'a>(
                     let typed = typed.clone();
                     move |v: f32| {
                         let mut next = now;
+                        if !alpha {
+                            next[3] = 255;
+                        }
                         if let Some(channel) = next.get_mut(i) {
                             *channel = v.round().clamp(0.0, 255.0) as u8;
                         }
@@ -773,16 +808,31 @@ impl App {
                 .size(12)
                 .boxed(),
         );
-        let (output, own): (Vec<_>, Vec<_>) = self
-            .layer_fields
-            .iter()
-            .partition(|f| f.field.path.first() == Some(&"output"));
-        for (heading, rows) in [("SHOW", own), ("OUTPUT", output)] {
+        // The settings by where they sit: the show's own, its output, the
+        // dot matrix pass over it, and what it takes as input.
+        let section = |path: &[&str]| match path {
+            ["output", "passes", ..] => "DOTS",
+            ["output", ..] => "OUTPUT",
+            ["input", ..] => "INPUT",
+            _ => "SHOW",
+        };
+        for heading in ["SHOW", "OUTPUT", "DOTS", "INPUT"] {
             panel = panel.push(container(text(heading).size(12)).padding([6, 0]).boxed());
-            for field in rows {
-                panel = panel.push(self.field_row(field));
+            if heading == "DOTS" {
+                panel = panel.push(
+                    text("Each canvas pixel as a dot, as on a dot matrix panel: set any to turn it on, reset them all for none. The stage shows dots from 3 screen pixels per canvas pixel; zoom in on a large show.")
+                        .size(12)
+                        .boxed(),
+                );
+            }
+            for field in &self.layer_fields {
+                if section(field.field.path) == heading {
+                    panel = panel.push(self.field_row(field));
+                }
             }
         }
+        panel = panel.push(self.list_panel(List::Keys));
+        panel = panel.push(self.list_panel(List::Variables));
         panel = panel.push(container(text("CONTENTS").size(12)).padding([6, 0]).boxed());
         panel.push(facts(&self.summary, &["show", "canvas"]).padding(0).boxed())
     }

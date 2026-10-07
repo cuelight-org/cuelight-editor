@@ -9,6 +9,7 @@ pub mod document;
 pub mod edit;
 pub mod fields;
 pub mod inputs;
+pub mod lists;
 pub mod log;
 pub mod opened;
 pub mod save;

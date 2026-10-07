@@ -1231,3 +1231,68 @@ fn a_sound_is_played_from_its_preview_or_says_why_not() {
             .is_ok()
     );
 }
+
+#[test]
+fn the_shows_keys_variables_and_dots_are_set_from_its_inspector() {
+    use cuelight_editor_core::lists::List;
+    let (mut app, _) = App::new();
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cuelight-editor-core/tests/fixtures/mini"
+    );
+    let _ = app.update(Message::Dropped(dir.into()));
+    let show = |app: &App| app.document.as_ref().unwrap().value();
+
+    // A key added on the empty row, then renamed by leaving its name.
+    let _ = app.update(Message::TypeListName(List::Keys, None, "Enter".into()));
+    let _ = app.update(Message::TypeListValue(List::Keys, None, "go".into()));
+    let _ = app.update(Message::ApplyList(List::Keys, None));
+    assert_eq!(show(&app)["input"]["keys"]["Enter"], "go");
+    let engine = lock(&app.session.as_ref().unwrap().engine);
+    assert_eq!(engine.show().unwrap().input.keys["Enter"], "go");
+    drop(engine);
+    // The fixture has the space bar already: a rename onto it is refused.
+    let _ = app.update(Message::TypeListName(
+        List::Keys,
+        Some("Enter".into()),
+        " ".into(),
+    ));
+    let _ = app.update(Message::Commit);
+    assert_eq!(app.status, "\" \" is there already");
+    let _ = app.update(Message::TypeListName(
+        List::Keys,
+        Some("Enter".into()),
+        "x".into(),
+    ));
+    let _ = app.update(Message::Commit);
+    assert_eq!(show(&app)["input"]["keys"]["x"], "go");
+    assert!(show(&app)["input"]["keys"].get("Enter").is_none());
+
+    // A variable, its starting value typed as a number.
+    let _ = app.update(Message::TypeListName(List::Variables, None, "speed".into()));
+    let _ = app.update(Message::TypeListValue(List::Variables, None, "12".into()));
+    let _ = app.update(Message::ApplyList(List::Variables, None));
+    assert_eq!(show(&app)["variables"]["speed"], 12);
+    let _ = app.update(Message::RemoveListRow(List::Variables, "speed".into()));
+    assert!(
+        show(&app)
+            .get("variables")
+            .is_none_or(|v| v.get("speed").is_none())
+    );
+
+    // The dots pass is on while any of its settings is, and goes with the
+    // last of them.
+    let _ = app.update(Message::PutField("dot size", "0.5".into()));
+    assert_eq!(
+        show(&app)["output"]["passes"],
+        serde_json::json!([{"dots": {"size": 0.5}}])
+    );
+    let _ = app.update(Message::ResetField("dot size"));
+    assert!(
+        show(&app)
+            .get("output")
+            .is_none_or(|o| o.get("passes").is_none()),
+        "{}",
+        show(&app)
+    );
+}

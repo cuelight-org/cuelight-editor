@@ -38,6 +38,7 @@ mod journal;
 mod library;
 mod lists;
 mod manipulate;
+mod scenes;
 mod sound;
 mod stage;
 mod styles;
@@ -148,6 +149,12 @@ pub struct App {
     /// The layers picked, in the order they were; the last is what the
     /// inspector shows.
     selection: Vec<LayerPath>,
+    /// The scene whose heading was picked in the tree, while no layer
+    /// is: its settings in the inspector.
+    scene: Option<usize>,
+    /// What was typed into the picked scene's trigger rows, by row
+    /// (`None` for the row that adds one).
+    triggers_typed: BTreeMap<Option<usize>, String>,
     /// The inspector row unfolded to list every source of its value.
     expanded: Option<Property>,
     /// The colour field whose channels are unfolded, by label.
@@ -385,8 +392,23 @@ pub enum Message {
     Seek(f64),
     /// Forwards or back by this many seconds, paused.
     Step(f64),
-    /// A scene's heading clicked in the tree: enter that scene, paused.
+    /// A scene's heading clicked in the tree: its settings in the
+    /// inspector, and the scene entered, paused.
+    PickScene(usize),
+    /// A scene picked in the top bar's menu: enter it, paused.
     EnterScene(usize),
+    /// A new scene after the picked one, picked.
+    AddScene,
+    /// Take the picked scene out, with its layers.
+    DeleteScene,
+    /// Move the picked scene one place up (`true`) or down.
+    MoveScene(bool),
+    /// A trigger of the picked scene typed into, by row (`None` for the
+    /// row that adds one); Enter in one, which writes all typed; or a
+    /// row taken out.
+    TypeTrigger(Option<usize>, String),
+    ApplyTriggers,
+    RemoveTrigger(usize),
     /// Count the playhead from when the active scene was entered, or
     /// from the start of the session.
     FollowScene(bool),
@@ -526,6 +548,8 @@ impl App {
             tab: Tab::Layers,
             rows: Vec::new(),
             selection: Vec::new(),
+            scene: None,
+            triggers_typed: BTreeMap::new(),
             expanded: None,
             unfolded_field: None,
             inputs: Inputs::default(),
@@ -670,6 +694,7 @@ impl App {
             Message::TypeListName(list, was, _) | Message::TypeListValue(list, was, _) => {
                 self.commit_typed(Some(editing::Typed::Row(*list, was.clone())))
             }
+            Message::TypeTrigger(row, _) => self.commit_typed(Some(editing::Typed::Trigger(*row))),
             Message::Choose(_)
             | Message::Pick(..)
             | Message::Deselect
@@ -691,7 +716,12 @@ impl App {
             | Message::Reorder(_)
             | Message::GroupLayers
             | Message::Ungroup
-            | Message::MoveLayers(_) => self.commit_typed(None),
+            | Message::MoveLayers(_)
+            | Message::PickScene(_)
+            | Message::AddScene
+            | Message::DeleteScene
+            | Message::MoveScene(_)
+            | Message::RemoveTrigger(_) => self.commit_typed(None),
             _ => {}
         }
         match message {
@@ -843,25 +873,37 @@ impl App {
                 }
                 Task::none()
             }
-            Message::EnterScene(scene) => {
-                if let Some(session) = &mut self.session {
-                    session.enter_scene(scene, Instant::now());
-                    self.follow_scene = true;
-                    self.hush();
-                }
+            Message::PickScene(scene) => self.pick_scene(scene),
+            Message::EnterScene(scene) => self.enter_scene(scene),
+            Message::AddScene => self.add_scene(),
+            Message::DeleteScene => self.delete_scene(),
+            Message::MoveScene(up) => self.move_scene(up),
+            Message::TypeTrigger(row, typed) => {
+                self.type_trigger(row, typed);
                 Task::none()
             }
+            // Enter applies the rows typed into, as leaving them does.
+            Message::ApplyTriggers => self.apply_triggers(None),
+            Message::RemoveTrigger(row) => self.remove_trigger(row),
             Message::FollowScene(on) => {
                 self.follow_scene = on;
                 Task::none()
             }
             Message::KeyPressed(key, modifiers) => {
                 let name = key_name(&key);
-                // Alt with an arrow moves the picked layers in the tree.
+                // Alt with an arrow moves the picked layers in the tree,
+                // or the picked scene.
                 if modifiers.alt() && !self.selection.is_empty() {
                     match name.as_str() {
                         "ArrowUp" => return self.update(Message::Reorder(true)),
                         "ArrowDown" => return self.update(Message::Reorder(false)),
+                        _ => {}
+                    }
+                }
+                if modifiers.alt() && self.selection.is_empty() && self.scene.is_some() {
+                    match name.as_str() {
+                        "ArrowUp" => return self.update(Message::MoveScene(true)),
+                        "ArrowDown" => return self.update(Message::MoveScene(false)),
                         _ => {}
                     }
                 }
@@ -894,6 +936,9 @@ impl App {
                         self.update(Message::Ungroup)
                     }
                     "g" if modifiers.control() => self.update(Message::GroupLayers),
+                    "Delete" if self.selection.is_empty() && self.scene.is_some() => {
+                        self.update(Message::DeleteScene)
+                    }
                     "Delete" => self.update(Message::DeleteLayers),
                     "Escape" => self.update(Message::Deselect),
                     " " => self.update(Message::TogglePause),
@@ -1074,6 +1119,10 @@ impl App {
                 };
                 let under = self.layers_under(&lock(&session.engine), point);
                 self.pick(under, pick);
+                if !self.selection.is_empty() {
+                    self.scene = None;
+                    self.triggers_typed.clear();
+                }
                 // A layer picked is what the inspector shows now.
                 self.selected = None;
                 Task::none()
@@ -1092,6 +1141,8 @@ impl App {
                 } else {
                     self.selection = vec![path];
                 }
+                self.scene = None;
+                self.triggers_typed.clear();
                 self.selected = None;
                 self.expanded = None;
                 self.unfolded_field = None;
@@ -1119,6 +1170,8 @@ impl App {
             Message::MoveLayers(to) => self.move_layers(to),
             Message::Deselect => {
                 self.selection.clear();
+                self.scene = None;
+                self.triggers_typed.clear();
                 self.selected = None;
                 self.expanded = None;
                 self.unfolded_field = None;
@@ -1228,6 +1281,15 @@ impl App {
         self.summary = opened::resummarize(&engine, &self.summary, &findings);
         drop(engine);
         // What was picked stays picked, where the show still has it.
+        if let Some(scene) = self.scene
+            && !self
+                .rows
+                .iter()
+                .any(|row| matches!(row, Row::Root { root: cuelight_core::Root::Scene(i), .. } if *i == scene))
+        {
+            self.scene = None;
+            self.triggers_typed.clear();
+        }
         let rows = &self.rows;
         self.selection.retain(|picked| {
             rows.iter()
@@ -1298,6 +1360,8 @@ impl App {
                 self.rows = engine.show().map(tree::rows).unwrap_or_default();
                 self.follow_scene = false;
                 self.selection.clear();
+                self.scene = None;
+                self.triggers_typed.clear();
                 self.expanded = None;
                 self.unfolded_field = None;
                 self.typed = None;
@@ -1473,6 +1537,20 @@ impl App {
                 .push(text(format!("{time:7.2} / {end:.0} s")).size(14).boxed())
                 .push(space::horizontal().width(16).boxed());
             if scenes {
+                // The scenes, the active one shown: picking one enters it.
+                let active = session.active_scene();
+                let choices = self.scene_choices();
+                let shown = choices
+                    .iter()
+                    .find(|c| active.as_deref() == Some(c.name.as_str()))
+                    .cloned();
+                bar = bar.push(
+                    pick_list(shown, choices, scenes::SceneChoice::to_string)
+                        .on_select(|choice: scenes::SceneChoice| Message::EnterScene(choice.index))
+                        .placeholder("Scene")
+                        .text_size(13)
+                        .boxed(),
+                );
                 bar = bar.push(
                     toggler(follow)
                         .label("Scene clock")

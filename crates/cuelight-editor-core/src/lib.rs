@@ -16,6 +16,7 @@ pub mod log;
 pub mod opened;
 pub mod placement;
 pub mod save;
+pub mod scenes;
 pub mod session;
 pub mod specimen;
 pub mod syntax;

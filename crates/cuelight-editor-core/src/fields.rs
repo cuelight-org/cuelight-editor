@@ -352,6 +352,40 @@ const fn show_field(label: &'static str, path: &'static [&'static str], input: I
     }
 }
 
+/// A scene's settings: its name, and the output it sets over the show's
+/// while it is active. What a scene writes is an override, even where it
+/// is what the show has; taking it out falls back to the show's.
+pub const SCENE_FIELDS: &[Field] = &[
+    scene_field("name", &["name"], Input::Text),
+    scene_field(
+        "mode",
+        &["output", "mode"],
+        Input::Choice(&["rgb", "gray2", "gray4"]),
+    ),
+    scene_field("tint", &["output", "tint"], Input::Opaque),
+    scene_field(
+        "scaling",
+        &["output", "scaling"],
+        Input::Choice(&["smooth", "pixel_perfect"]),
+    ),
+    scene_field(
+        "edges",
+        &["output", "edges"],
+        Input::Choice(&["soft", "hard"]),
+    ),
+];
+
+const fn scene_field(label: &'static str, path: &'static [&'static str], input: Input) -> Field {
+    Field {
+        label,
+        path,
+        input,
+        kinds: &["scene"],
+        not: &[],
+        needed: false,
+    }
+}
+
 /// A font style's keys, in the order the inspector lists them.
 pub const STYLE_FIELDS: &[Field] = &[
     style_field("file", &["file"], Input::Font, false),
@@ -388,7 +422,7 @@ pub const SHOW_ELSEWHERE: &[(&str, &str)] = &[
     ("fonts", "the font styles"),
     ("values", "the binding card (M4)"),
     ("layers", "the layers list (item 24)"),
-    ("scenes", "the layers list (item 24)"),
+    ("scenes", "the scenes in the tree"),
     ("variables", "the show's lists"),
     ("keys", "the show's lists"),
 ];
@@ -425,6 +459,7 @@ pub fn kind(layer: &Value) -> Option<&str> {
 pub fn of(kind: &str) -> impl Iterator<Item = &'static Field> + '_ {
     let table = match kind {
         "show" => SHOW_FIELDS,
+        "scene" => SCENE_FIELDS,
         "font style" => STYLE_FIELDS,
         _ => FIELDS,
     };
@@ -607,6 +642,9 @@ pub fn set(
 /// `field` when it does not write it: the engine is asked, with the key
 /// taken out. A key the layer cannot do without has no default.
 pub fn is_default(layer: &Value, field: &Field, value: &Value) -> bool {
+    if field.kinds == ["scene"] {
+        return false;
+    }
     if field.kinds == ["show"] {
         return show_default(field).is_some_and(|default| crate::edit::same(&default, value));
     }

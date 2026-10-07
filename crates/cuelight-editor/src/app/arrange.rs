@@ -1,7 +1,8 @@
 //! Making and arranging layers from the tree: the add menu, and
 //! deleting, duplicating, reordering, grouping and moving the picked
 //! layers. Each is one step to undo; what it made or moved is picked
-//! after it.
+//! after it. The scenes' own buttons are here too; what they do is in
+//! `scenes`.
 
 use cuelight_core::Root;
 use cuelight_editor_core::assets;
@@ -84,17 +85,34 @@ impl App {
                 .style(button::secondary)
         };
         let group = self.picked_group().is_some();
+        // With a scene's heading picked rather than layers, Up, Down and
+        // Delete are the scene's.
+        let scene = !picked && self.scene.is_some();
+        let (up, down, delete) = if scene {
+            (
+                Message::MoveScene(true),
+                Message::MoveScene(false),
+                Message::DeleteScene,
+            )
+        } else {
+            (
+                Message::Reorder(true),
+                Message::Reorder(false),
+                Message::DeleteLayers,
+            )
+        };
         let mut bar = Column::<Element<'a, Message>>::new()
             .spacing(4)
             .push(row![add, moving].spacing(6).boxed())
             .push(
                 row![
-                    small("Up", Message::Reorder(true), picked),
-                    small("Down", Message::Reorder(false), picked),
+                    small("Up", up, picked || scene),
+                    small("Down", down, picked || scene),
                     small("Group", Message::GroupLayers, picked),
                     small("Ungroup", Message::Ungroup, group),
                     small("Duplicate", Message::DuplicateLayers, picked),
-                    small("Delete", Message::DeleteLayers, picked),
+                    small("Delete", delete, picked || scene),
+                    small("Add scene", Message::AddScene, self.document.is_some()),
                 ]
                 .spacing(4)
                 .wrap()

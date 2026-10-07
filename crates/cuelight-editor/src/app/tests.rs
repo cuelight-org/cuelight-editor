@@ -2273,3 +2273,267 @@ fn the_log_is_selected_and_copied_but_not_edited() {
     )));
     assert!(app.log_view.text().contains("a new line"));
 }
+
+/// Three scenes, each entered by its own trigger, the first with a
+/// timeline that starts on entering it and one that waits for a when.
+const SCENES: &str = r##"{
+  "format": 1,
+  "name": "t",
+  "size": [200, 100],
+  "layers": [],
+  "scenes": [
+    { "name": "attract", "trigger": "attract", "layers": [
+      { "name": "dot", "type": "shape", "shape": { "circle": [0, 0, 4] }, "fill": "#FFFFFF",
+        "timelines": [
+          { "name": "pulse", "autoplay": true, "tracks": [] },
+          { "name": "pop", "when": { "variable": "score" }, "tracks": [] }
+        ] }
+    ] },
+    { "name": "game", "trigger": "start", "layers": [] },
+    { "name": "over", "trigger": "game_over", "layers": [] }
+  ]
+}
+"##;
+
+fn scene_names(app: &App) -> Vec<String> {
+    cuelight_editor_core::scenes::names(app.document.as_ref().unwrap())
+}
+
+fn scene_json(app: &App, index: usize) -> serde_json::Value {
+    app.document.as_ref().unwrap().value()["scenes"][index].clone()
+}
+
+fn click(app: &mut App, label: &str) {
+    let mut ui = simulator(app.view());
+    let _ = ui.click(label);
+    for message in ui.into_messages() {
+        let _ = app.update(message);
+    }
+}
+
+#[test]
+fn a_scene_heading_shows_the_scene_and_enters_it() {
+    let (mut app, _dir) = open_with_assets(SCENES);
+    click(&mut app, "SCENE game");
+    assert_eq!(app.scene, Some(1));
+    let active = || app.session.as_ref().unwrap().active_scene();
+    assert_eq!(active().as_deref(), Some("game"));
+    // The heading of the active scene is starred; the picked one is the
+    // inspector's.
+    click(&mut app, "SCENE attract");
+    assert_eq!(
+        app.session.as_ref().unwrap().active_scene().as_deref(),
+        Some("attract")
+    );
+    let mut ui = simulator(app.view());
+    for said in [
+        "TRIGGERS",
+        "OUTPUT",
+        "ENTERING IT",
+        "ENTERED",
+        "dot: pulse",
+        "dot: pop",
+    ] {
+        assert!(ui.find(said).is_ok(), "{said}");
+    }
+    assert!(ui.find("SCENE attract *").is_ok());
+    drop(ui);
+    // Where it was entered from, and by what.
+    let entry = app
+        .session
+        .as_ref()
+        .unwrap()
+        .entries
+        .last()
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (entry.scene.as_str(), entry.from.as_deref()),
+        ("attract", Some("game"))
+    );
+    // A layer picked shows the layer instead; the show's heading the show.
+    let dot = app.rows.iter().find_map(|row| match row {
+        Row::Layer { path, name, .. } if name == "dot" => Some(path.clone()),
+        _ => None,
+    });
+    let _ = app.update(Message::Choose(dot.unwrap()));
+    assert_eq!(app.scene, None);
+    click(&mut app, "SCENE over");
+    click(&mut app, "SHOW");
+    assert_eq!(app.scene, None);
+    assert_eq!(app.fields_of(), editing::FieldsOf::Show);
+}
+
+#[test]
+fn scenes_are_added_renamed_moved_and_deleted_in_one_step_each() {
+    let (mut app, _dir) = open_with_assets(SCENES);
+    let undo = |app: &mut App| {
+        let _ = app.update(Message::Undo);
+    };
+    click(&mut app, "SCENE game");
+
+    // A new scene goes after the picked one, picked and entered.
+    click(&mut app, "Add scene");
+    assert_eq!(scene_names(&app), ["attract", "game", "scene", "over"]);
+    assert_eq!(app.scene, Some(2));
+    assert_eq!(scene_json(&app, 2)["trigger"], "scene");
+    assert_eq!(
+        app.session.as_ref().unwrap().active_scene().as_deref(),
+        Some("scene")
+    );
+
+    // Renamed from its name field; a name another scene has is refused.
+    let _ = app.update(Message::TypeField("name", "bonus".into()));
+    let _ = app.update(Message::Commit);
+    assert_eq!(scene_names(&app), ["attract", "game", "bonus", "over"]);
+    let _ = app.update(Message::TypeField("name", "game".into()));
+    let _ = app.update(Message::ApplyField("name"));
+    assert_eq!(app.status, "cannot rename: another scene is called game");
+    assert_eq!(scene_names(&app), ["attract", "game", "bonus", "over"]);
+    let _ = app.update(Message::TypeField("name", "bonus".into()));
+    let _ = app.update(Message::ApplyField("name"));
+
+    // Moved up with Alt+Up, past the first, which a show starts in.
+    let alt = keyboard::Modifiers::ALT;
+    press(&mut app, "ArrowUp", alt);
+    press(&mut app, "ArrowUp", alt);
+    assert_eq!(scene_names(&app), ["bonus", "attract", "game", "over"]);
+    assert_eq!(app.scene, Some(0));
+    press(&mut app, "ArrowUp", alt);
+    assert_eq!(app.status, "cannot move: already first");
+
+    // Deleted with its layers; each step undoes on its own.
+    click(&mut app, "SCENE attract");
+    press(&mut app, "Delete", keyboard::Modifiers::default());
+    assert_eq!(scene_names(&app), ["bonus", "game", "over"]);
+    assert_eq!(app.scene, None);
+    assert!(tree_lines(&app).iter().all(|line| !line.contains("dot")));
+    undo(&mut app);
+    assert_eq!(scene_names(&app), ["bonus", "attract", "game", "over"]);
+    undo(&mut app);
+    undo(&mut app);
+    assert_eq!(scene_names(&app), ["attract", "game", "bonus", "over"]);
+    undo(&mut app);
+    undo(&mut app);
+    assert_eq!(app.document.as_ref().unwrap().text(), SCENES);
+}
+
+#[test]
+fn a_scenes_triggers_are_typed_row_by_row() {
+    let (mut app, _dir) = open_with_assets(SCENES);
+    click(&mut app, "SCENE game");
+    // A second trigger, added from the empty row and applied on leaving.
+    let _ = app.update(Message::TypeTrigger(None, "coin".into()));
+    let _ = app.update(Message::Commit);
+    assert_eq!(
+        scene_json(&app, 1)["trigger"],
+        serde_json::json!(["start", "coin"])
+    );
+    // The new trigger enters the scene.
+    let _ = app.update(Message::Fire("attract".into()));
+    let _ = app.update(Message::Fire("coin".into()));
+    assert_eq!(
+        app.session.as_ref().unwrap().active_scene().as_deref(),
+        Some("game")
+    );
+    // Edited in place with Enter, then taken out: one name again.
+    let _ = app.update(Message::TypeTrigger(Some(0), "begin".into()));
+    let _ = app.update(Message::ApplyTriggers);
+    assert_eq!(
+        scene_json(&app, 1)["trigger"],
+        serde_json::json!(["begin", "coin"])
+    );
+    let _ = app.update(Message::RemoveTrigger(1));
+    assert_eq!(scene_json(&app, 1)["trigger"], "begin");
+    let _ = app.update(Message::RemoveTrigger(0));
+    assert!(scene_json(&app, 1).get("trigger").is_none());
+    // Without one a later scene cannot be entered, and says so.
+    let mut ui = simulator(app.view());
+    assert!(
+        ui.find("No trigger enters it: only the first scene is entered without one.")
+            .is_ok()
+    );
+    drop(ui);
+    let _ = app.update(Message::EnterScene(1));
+    assert!(
+        app.status.starts_with("no trigger enters scene game"),
+        "{}",
+        app.status
+    );
+}
+
+#[test]
+fn a_scenes_output_is_set_over_the_shows() {
+    let (mut app, _dir) = open_with_assets(SCENES);
+    click(&mut app, "SCENE game");
+    // What it leaves out shows as the show's.
+    let mode = |app: &App| {
+        app.layer_fields
+            .iter()
+            .find(|f| f.field.label == "mode")
+            .map(|f| (f.default.clone(), f.written))
+    };
+    assert_eq!(mode(&app), Some(("rgb".to_owned(), false)));
+    let _ = app.update(Message::PutField("mode", "gray4".into()));
+    assert_eq!(scene_json(&app, 1)["output"]["mode"], "gray4");
+    // Even the show's own value is an override, written.
+    let _ = app.update(Message::PutField("mode", "rgb".into()));
+    assert_eq!(scene_json(&app, 1)["output"]["mode"], "rgb");
+    let _ = app.update(Message::ResetField("mode"));
+    assert!(
+        scene_json(&app, 1).get("output").is_none(),
+        "{}",
+        scene_json(&app, 1)
+    );
+}
+
+/// `from` copied into `to`, folders and all.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn red_riding_hoods_pages_are_reordered_and_entered_from_the_menu() {
+    let Some(book) = examples().map(|e| e.join("demos/red_riding_hood")) else {
+        eprintln!("no cuelight-examples checkout: the book's pages are not tried");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    copy_tree(&book, dir.path());
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dir.path().into()));
+    assert!(app.status.starts_with("opened "), "{}", app.status);
+    let menu =
+        |app: &App| -> Vec<String> { app.scene_choices().into_iter().map(|c| c.name).collect() };
+    let pages = menu(&app);
+    assert!(pages.len() >= 3, "{pages:?}");
+    // The last page picked by its heading (far down the tree, out of the
+    // simulator's view) and moved up one place.
+    let last = pages.last().cloned().unwrap();
+    let before = pages.get(pages.len() - 2).cloned().unwrap();
+    let _ = app.update(Message::PickScene(pages.len() - 1));
+    assert_eq!(app.scene, Some(pages.len() - 1));
+    let _ = app.update(Message::MoveScene(true));
+    assert_eq!(app.scene, Some(pages.len() - 2), "{}", app.status);
+    let moved = menu(&app);
+    assert_eq!(moved.get(moved.len() - 2), Some(&last));
+    assert_eq!(moved.last(), Some(&before));
+    assert_eq!(moved, scene_names(&app));
+
+    // Entered from the top bar's menu.
+    let second = app.scene_choices().into_iter().nth(1).unwrap();
+    let _ = app.update(Message::EnterScene(second.index));
+    assert_eq!(
+        app.session.as_ref().unwrap().active_scene().as_deref(),
+        Some(second.name.as_str())
+    );
+}

@@ -36,8 +36,9 @@ impl App {
     }
 
     /// The layers as a tree: the show's own, then each scene's, groups'
-    /// children indented under them; the picked ones marked (the show
-    /// while nothing is), the active scene starred.
+    /// children indented under them; the picked ones marked (a scene's
+    /// heading while it is picked, the show's while nothing is), the
+    /// active scene starred.
     fn tree_panel<'a>(&'a self, session: &'a Session) -> Column<Element<'a, Message>> {
         let mut panel = Column::new().spacing(2).padding(12);
         let active = session.active_scene();
@@ -54,12 +55,12 @@ impl App {
                         .width(Fill)
                         .padding([6, 0])
                         .style(button::text);
-                    if self.selection.is_empty() {
+                    if self.selection.is_empty() && self.scene.is_none() {
                         b = b.style(button::secondary);
                     }
                     panel = panel.push(b.boxed());
                 }
-                // A scene's heading enters the scene.
+                // A scene's heading picks the scene and enters it.
                 Row::Root {
                     root: cuelight_core::Root::Scene(i),
                     name,
@@ -69,14 +70,15 @@ impl App {
                     } else {
                         format!("SCENE {name}")
                     };
-                    panel = panel.push(
-                        button(text(heading).size(12))
-                            .on_press(Message::EnterScene(*i))
-                            .width(Fill)
-                            .padding([6, 0])
-                            .style(button::text)
-                            .boxed(),
-                    );
+                    let mut b = button(text(heading).size(12))
+                        .on_press(Message::PickScene(*i))
+                        .width(Fill)
+                        .padding([6, 0])
+                        .style(button::text);
+                    if self.selection.is_empty() && self.scene == Some(*i) {
+                        b = b.style(button::secondary);
+                    }
+                    panel = panel.push(b.boxed());
                 }
                 Row::Layer {
                     path,

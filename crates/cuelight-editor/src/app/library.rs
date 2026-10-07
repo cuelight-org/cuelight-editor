@@ -23,8 +23,11 @@ impl App {
             Tab::Layers => self.tree_panel(session),
             Tab::Assets => self.assets_panel(),
         };
+        // The tree has its menu and buttons above it, out of its scroll.
+        let bar = (self.tab == Tab::Layers).then(|| container(self.arrange_bar()).padding([4, 12]));
         column![
             container(tabs).padding([4, 8]),
+            bar,
             scrollable(body).width(Fill).height(Fill)
         ]
         .width(Fill)

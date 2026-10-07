@@ -7,6 +7,8 @@ use cuelight_core::{
     DigitDisplay, Layer, LayerKind, LayerPath, Property, Root, Show, layer_at, root_layers,
 };
 
+use crate::document::{Part, Pointer};
+
 /// One row of the tree.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
@@ -121,6 +123,38 @@ pub fn pointer(show: &Show, path: &LayerPath) -> Option<String> {
         layers = layer.children();
     }
     Some(out)
+}
+
+/// The layer a document pointer leads to, the other way from `pointer`:
+/// `/layers/1/children/0` is the show's second layer's first child.
+/// `None` for a pointer that does not lead to a layer.
+pub fn path_of(pointer: &Pointer) -> Option<LayerPath> {
+    let (root, mut rest) = match pointer.0.as_slice() {
+        [Part::Key(layers), rest @ ..] if layers == "layers" => (Root::Show, rest),
+        [
+            Part::Key(scenes),
+            Part::Index(i),
+            Part::Key(layers),
+            rest @ ..,
+        ] if scenes == "scenes" && layers == "layers" => (Root::Scene(*i), rest),
+        _ => return None,
+    };
+    let mut indices = Vec::new();
+    loop {
+        match rest {
+            [Part::Index(i)] => {
+                indices.push(*i);
+                return Some(LayerPath::new(root, indices));
+            }
+            [Part::Index(i), Part::Key(list), more @ ..]
+                if list == "children" || list == "parts" =>
+            {
+                indices.push(*i);
+                rest = more;
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// Whether `path` is `ancestor` or lies under it.
@@ -240,6 +274,15 @@ mod tests {
             Some("/scenes/0/layers/0")
         );
         assert_eq!(pointer(&show, &LayerPath::new(Root::Show, [1, 7])), None);
+        // And back.
+        let back = |text: &str| path_of(&Pointer::parse(text).unwrap());
+        assert_eq!(back("/layers/1/children/0"), Some(path.clone()));
+        assert_eq!(
+            back("/scenes/0/layers/0"),
+            Some(LayerPath::new(Root::Scene(0), [0]))
+        );
+        assert_eq!(back("/layers/1/children"), None);
+        assert_eq!(back("/fonts/0"), None);
     }
 
     /// An artwork layer's parts are layers under it, and live under

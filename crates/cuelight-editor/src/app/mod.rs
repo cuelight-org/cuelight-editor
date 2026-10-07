@@ -29,6 +29,7 @@ use cuelight_editor_core::session::Session;
 #[cfg(not(target_arch = "wasm32"))]
 use cuelight_editor_core::watch;
 
+mod arrange;
 mod assets;
 mod editing;
 mod inputs_panel;
@@ -217,6 +218,12 @@ pub struct App {
     /// The window was asked to close with unsaved edits: what to do with
     /// them waits for an answer.
     closing: bool,
+    /// The SVG path data typed for a path the add menu makes, while it
+    /// waits for it.
+    path_typed: Option<String>,
+    /// The modifier keys held: Shift or Ctrl with a click in the tree
+    /// adds to the selection.
+    held: keyboard::Modifiers,
 }
 
 /// An area of the window.
@@ -411,8 +418,31 @@ pub enum Message {
     Preview(usize),
     /// A click on the stage at a canvas point: pick the layer there.
     Pick([f64; 2], Pick),
-    /// A layer picked in the tree.
+    /// A layer picked in the tree; with Shift or Ctrl held, added to
+    /// the selection or taken out of it.
     Choose(LayerPath),
+    /// The modifier keys held changed.
+    Modifiers(keyboard::Modifiers),
+    /// The add menu picked a kind of layer.
+    AddLayer(cuelight_editor_core::layers::Kind),
+    /// SVG path data typed for a new path, then added, or not.
+    TypePath(String),
+    AddPath,
+    CancelPath,
+    /// Take the picked layers out (Delete).
+    DeleteLayers,
+    /// Copy the picked layers, each right after itself (Ctrl+D).
+    DuplicateLayers,
+    /// Move the picked layers one place up the tree (`true`) or down
+    /// (Alt+Up, Alt+Down).
+    Reorder(bool),
+    /// Put the picked layers into a new group (Ctrl+G).
+    GroupLayers,
+    /// Put the picked group's children where it is (Ctrl+Shift+G).
+    Ungroup,
+    /// Move the picked layers to the end of a group, a scene or the
+    /// show's layers.
+    MoveLayers(arrange::Destination),
     /// The selection cleared.
     Deselect,
     /// An inspector row unfolded, or all folded.
@@ -522,6 +552,8 @@ impl App {
             mode: iced::theme::Mode::None,
             theme_pick: None,
             closing: false,
+            path_typed: None,
+            held: keyboard::Modifiers::default(),
             fitted: Cell::new(1.0),
             log_open: true,
             follow_scene: false,
@@ -634,7 +666,15 @@ impl App {
             | Message::Select(_)
             | Message::CloseRequested
             | Message::Reset(_)
-            | Message::ResetField(_) => self.commit_typed(None),
+            | Message::ResetField(_)
+            | Message::AddLayer(_)
+            | Message::AddPath
+            | Message::DeleteLayers
+            | Message::DuplicateLayers
+            | Message::Reorder(_)
+            | Message::GroupLayers
+            | Message::Ungroup
+            | Message::MoveLayers(_) => self.commit_typed(None),
             _ => {}
         }
         match message {
@@ -800,6 +840,14 @@ impl App {
             }
             Message::KeyPressed(key, modifiers) => {
                 let name = key_name(&key);
+                // Alt with an arrow moves the picked layers in the tree.
+                if modifiers.alt() && !self.selection.is_empty() {
+                    match name.as_str() {
+                        "ArrowUp" => return self.update(Message::Reorder(true)),
+                        "ArrowDown" => return self.update(Message::Reorder(false)),
+                        _ => {}
+                    }
+                }
                 // With a layer picked the arrows nudge it, before the show
                 // hears them.
                 if !modifiers.control()
@@ -824,6 +872,12 @@ impl App {
                     }
                     "z" if modifiers.control() => self.update(Message::Undo),
                     "y" if modifiers.control() => self.update(Message::Redo),
+                    "d" | "D" if modifiers.control() => self.update(Message::DuplicateLayers),
+                    "g" | "G" if modifiers.control() && modifiers.shift() => {
+                        self.update(Message::Ungroup)
+                    }
+                    "g" if modifiers.control() => self.update(Message::GroupLayers),
+                    "Delete" => self.update(Message::DeleteLayers),
                     "Escape" => self.update(Message::Deselect),
                     " " => self.update(Message::TogglePause),
                     "r" => self.update(Message::Restart),
@@ -1011,12 +1065,41 @@ impl App {
                 // Also from the inspector's list of an asset's uses: the
                 // layer is then shown where the tree has it.
                 self.tab = Tab::Layers;
-                self.selection = vec![path];
+                if self.held.shift() || self.held.control() {
+                    match self.selection.iter().position(|p| *p == path) {
+                        Some(i) => {
+                            self.selection.remove(i);
+                        }
+                        None => self.selection.push(path),
+                    }
+                } else {
+                    self.selection = vec![path];
+                }
                 self.selected = None;
                 self.expanded = None;
                 self.unfolded_field = None;
                 Task::none()
             }
+            Message::Modifiers(held) => {
+                self.held = held;
+                Task::none()
+            }
+            Message::AddLayer(kind) => self.add_layer(kind),
+            Message::TypePath(path) => {
+                self.path_typed = Some(path);
+                Task::none()
+            }
+            Message::AddPath => self.add_path(),
+            Message::CancelPath => {
+                self.path_typed = None;
+                Task::none()
+            }
+            Message::DeleteLayers => self.delete_layers(),
+            Message::DuplicateLayers => self.duplicate_layers(),
+            Message::Reorder(up) => self.reorder(up),
+            Message::GroupLayers => self.group_layers(),
+            Message::Ungroup => self.ungroup(),
+            Message::MoveLayers(to) => self.move_layers(to),
             Message::Deselect => {
                 self.selection.clear();
                 self.selected = None;
@@ -1207,6 +1290,7 @@ impl App {
             keyboard::Event::KeyPressed { key, modifiers, .. } => {
                 Some(Message::KeyPressed(key, modifiers))
             }
+            keyboard::Event::ModifiersChanged(held) => Some(Message::Modifiers(held)),
             _ => None,
         });
         let mut subscriptions = vec![

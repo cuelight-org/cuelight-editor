@@ -1801,3 +1801,375 @@ fn closing_with_unsaved_edits_asks_first() {
     let saved = std::fs::read_to_string(dir.path().join("show.json")).unwrap();
     assert!(saved.contains("#102030"));
 }
+
+/// A short WAV of silence, for a show that needs a sound.
+fn silence() -> Vec<u8> {
+    let samples = 800u32;
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + samples * 2).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&8000u32.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(samples * 2).to_le_bytes());
+    wav.resize(wav.len() + samples as usize * 2, 0);
+    wav
+}
+
+/// A show in a temporary folder, as `show.json` says, with a font, a
+/// sound and a video beside it.
+fn open_with_assets(show: &str) -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cuelight-editor-core/tests/fixtures/typed/assets/fonts");
+    std::fs::create_dir_all(dir.path().join("assets/fonts")).unwrap();
+    for name in ["tiny.fnt", "tiny.png"] {
+        std::fs::copy(fonts.join(name), dir.path().join("assets/fonts").join(name)).unwrap();
+    }
+    std::fs::create_dir_all(dir.path().join("assets/sounds")).unwrap();
+    std::fs::write(dir.path().join("assets/sounds/ding.wav"), silence()).unwrap();
+    std::fs::create_dir_all(dir.path().join("assets/videos")).unwrap();
+    std::fs::write(dir.path().join("assets/videos/clip.webm"), b"not decoded").unwrap();
+    std::fs::write(dir.path().join("show.json"), show).unwrap();
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dir.path().into()));
+    assert!(app.status.starts_with("opened "), "{}", app.status);
+    (app, dir)
+}
+
+/// What the tree lists, a layer as its kind and name, indented under
+/// its group.
+fn tree_lines(app: &App) -> Vec<String> {
+    app.rows
+        .iter()
+        .map(|row| match row {
+            Row::Root { name, .. } => format!("[{name}]"),
+            Row::Layer {
+                name, kind, depth, ..
+            } => format!("{}{kind} {name}", "  ".repeat(*depth)),
+        })
+        .collect()
+}
+
+fn press(app: &mut App, key: &str, modifiers: keyboard::Modifiers) {
+    let key = match key {
+        "Delete" => keyboard::Key::Named(keyboard::key::Named::Delete),
+        "ArrowUp" => keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+        "ArrowDown" => keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+        "Escape" => keyboard::Key::Named(keyboard::key::Named::Escape),
+        c => keyboard::Key::Character(c.into()),
+    };
+    let _ = app.update(Message::KeyPressed(key, modifiers));
+}
+
+#[test]
+fn a_show_with_one_layer_of_each_kind_is_built_from_empty() {
+    let (mut app, dir) = open_with_assets(
+        "{\n  \"format\": 1,\n  \"name\": \"t\",\n  \"size\": [200, 100],\n  \"fonts\": {\n    \"body\": { \"file\": \"tiny\" }\n  }\n}\n",
+    );
+    // The menu lists every kind.
+    {
+        let mut ui = simulator(app.view());
+        assert!(ui.find("Add layer").is_ok());
+        assert!(ui.find("Move to").is_ok());
+    }
+    use cuelight_editor_core::layers::Kind;
+    for kind in Kind::ALL {
+        let _ = app.update(Message::Deselect);
+        let _ = app.update(Message::AddLayer(kind));
+        if kind == Kind::Path {
+            // The path asks for its data, which starts as a triangle.
+            assert_eq!(
+                app.path_typed.as_deref(),
+                Some("M 0 -26 L 26 26 L -26 26 Z")
+            );
+            let mut ui = simulator(app.view());
+            assert!(ui.find("Add path").is_ok());
+            drop(ui);
+            let _ = app.update(Message::TypePath("M 0 0 L 20 0 L 10 16 Z".into()));
+            let _ = app.update(Message::AddPath);
+            assert_eq!(app.path_typed, None);
+        }
+        assert!(app.status.starts_with("added"), "{kind:?}: {}", app.status);
+        assert_eq!(app.selection.len(), 1, "the new layer is picked");
+    }
+    assert_eq!(
+        tree_lines(&app),
+        [
+            "[show]",
+            "shape rect",
+            "shape rounded_rect",
+            "shape circle",
+            "shape path",
+            "text text",
+            "digits digits",
+            "group group",
+            "audio ding",
+            "video clip",
+        ]
+    );
+    // Each was one step.
+    let _ = app.update(Message::Undo);
+    assert_eq!(app.rows.len(), 9);
+    let _ = app.update(Message::Redo);
+    // Saved, it opens again without a word against it.
+    let _ = app.update(Message::Save);
+    assert!(app.status.starts_with("saved"), "{}", app.status);
+    let (mut again, _) = App::new();
+    let _ = again.update(Message::Dropped(dir.path().into()));
+    assert!(again.status.starts_with("opened "), "{}", again.status);
+    assert_eq!(again.summary.problems, Vec::<String>::new());
+    assert_eq!(tree_lines(&again), tree_lines(&app));
+    let show = std::fs::read_to_string(dir.path().join("show.json")).unwrap();
+    assert!(
+        show.contains("    {\n      \"name\": \"text\",\n      \"type\": \"text\",\n      \"x\": 100,\n      \"y\": 50,\n      \"anchor\": \"center\",\n      \"text\": \"Text\",\n      \"font\": \"body\"\n    },"),
+        "{show}"
+    );
+}
+
+#[test]
+fn what_cannot_be_added_says_why() {
+    let (mut app, _dir) = open_layers(r#"{ "name": "a", "type": "group", "children": [] }"#);
+    let _ = app.update(Message::AddLayer(cuelight_editor_core::layers::Kind::Audio));
+    assert_eq!(
+        app.status,
+        "cannot add audio: the show has no sounds to play"
+    );
+    let _ = app.update(Message::AddLayer(cuelight_editor_core::layers::Kind::Video));
+    assert_eq!(
+        app.status,
+        "cannot add video: the show has no videos to show"
+    );
+    let _ = app.update(Message::AddLayer(cuelight_editor_core::layers::Kind::Text));
+    assert_eq!(
+        app.status,
+        "cannot add text: the show has no fonts to write in"
+    );
+    assert_eq!(tree_lines(&app), ["[show]", "group a"]);
+    assert!(
+        !app.document.as_ref().unwrap().can_undo(),
+        "nothing was written"
+    );
+    // Path data the show cannot read makes no path, and waits to be fixed.
+    let _ = app.update(Message::AddLayer(cuelight_editor_core::layers::Kind::Path));
+    let _ = app.update(Message::TypePath("M 0 0 Q".into()));
+    let _ = app.update(Message::AddPath);
+    assert!(app.status.starts_with("cannot add: "), "{}", app.status);
+    assert_eq!(app.path_typed.as_deref(), Some("M 0 0 Q"));
+    assert_eq!(tree_lines(&app), ["[show]", "group a"]);
+    assert!(!app.document.as_ref().unwrap().text().contains("path"));
+}
+
+#[test]
+fn a_new_layer_goes_after_the_picked_one() {
+    let (mut app, _dir) = open_layers(
+        r##"{ "name": "a", "type": "group", "children": [
+      { "name": "a1", "type": "shape", "shape": { "rect": [0, 0, 4, 4] }, "fill": "#FFFFFF" } ] },
+    { "name": "b", "type": "shape", "shape": { "rect": [0, 0, 4, 4] }, "fill": "#FFFFFF" }"##,
+    );
+    let _ = app.update(Message::Choose(LayerPath::new(
+        cuelight_core::Root::Show,
+        [0, 0],
+    )));
+    let _ = app.update(Message::AddLayer(
+        cuelight_editor_core::layers::Kind::Circle,
+    ));
+    assert_eq!(
+        tree_lines(&app),
+        [
+            "[show]",
+            "group a",
+            "  shape a1",
+            "  shape circle",
+            "shape b"
+        ]
+    );
+    assert_eq!(
+        app.selection,
+        [LayerPath::new(cuelight_core::Root::Show, [0, 1])]
+    );
+}
+
+#[test]
+fn the_keys_delete_duplicate_group_and_reorder_the_picked_layers() {
+    let (mut app, _dir) = open_layers(
+        r##"{ "name": "a", "type": "shape", "shape": { "rect": [0, 0, 4, 4] }, "fill": "#FFFFFF" },
+    { "name": "b", "type": "shape", "shape": { "rect": [0, 0, 4, 4] }, "fill": "#FFFFFF" },
+    { "name": "c", "type": "shape", "shape": { "rect": [0, 0, 4, 4] }, "fill": "#FFFFFF" }"##,
+    );
+    let none = keyboard::Modifiers::default();
+    let ctrl = keyboard::Modifiers::CTRL;
+    let show = cuelight_core::Root::Show;
+    // Shift held, a click in the tree adds to the selection.
+    let _ = app.update(Message::Choose(LayerPath::new(show, [0])));
+    let _ = app.update(Message::Modifiers(keyboard::Modifiers::SHIFT));
+    let _ = app.update(Message::Choose(LayerPath::new(show, [2])));
+    let _ = app.update(Message::Modifiers(none));
+    assert_eq!(app.selection.len(), 2);
+
+    press(&mut app, "d", ctrl);
+    assert_eq!(
+        tree_lines(&app),
+        [
+            "[show]",
+            "shape a",
+            "shape a_2",
+            "shape b",
+            "shape c",
+            "shape c_2"
+        ]
+    );
+    assert_eq!(
+        app.selection,
+        [LayerPath::new(show, [1]), LayerPath::new(show, [4])],
+        "the copies are picked"
+    );
+    press(&mut app, "Delete", none);
+    assert_eq!(
+        tree_lines(&app),
+        ["[show]", "shape a", "shape b", "shape c"]
+    );
+    assert!(app.selection.is_empty());
+    press(&mut app, "z", ctrl);
+    assert_eq!(app.rows.len(), 6, "the deleted come back with one undo");
+    press(&mut app, "z", ctrl);
+    assert_eq!(
+        tree_lines(&app),
+        ["[show]", "shape a", "shape b", "shape c"]
+    );
+
+    let _ = app.update(Message::Choose(LayerPath::new(show, [2])));
+    press(&mut app, "ArrowUp", keyboard::Modifiers::ALT);
+    assert_eq!(
+        tree_lines(&app),
+        ["[show]", "shape a", "shape c", "shape b"]
+    );
+    assert_eq!(app.selection, [LayerPath::new(show, [1])]);
+    press(&mut app, "ArrowUp", keyboard::Modifiers::ALT);
+    press(&mut app, "ArrowUp", keyboard::Modifiers::ALT);
+    assert_eq!(app.status, "cannot move: already first");
+    press(&mut app, "ArrowDown", keyboard::Modifiers::ALT);
+    assert_eq!(
+        tree_lines(&app),
+        ["[show]", "shape a", "shape c", "shape b"]
+    );
+
+    // Grouped where the first was, the group picked; and back.
+    let _ = app.update(Message::Modifiers(keyboard::Modifiers::CTRL));
+    let _ = app.update(Message::Choose(LayerPath::new(show, [2])));
+    let _ = app.update(Message::Modifiers(none));
+    press(&mut app, "g", ctrl);
+    assert_eq!(
+        tree_lines(&app),
+        ["[show]", "shape a", "group group", "  shape c", "  shape b"]
+    );
+    assert_eq!(app.selection, [LayerPath::new(show, [1])]);
+    press(&mut app, "G", ctrl | keyboard::Modifiers::SHIFT);
+    assert_eq!(
+        tree_lines(&app),
+        ["[show]", "shape a", "shape c", "shape b"]
+    );
+    assert_eq!(app.selection.len(), 2, "the children are picked");
+    press(&mut app, "Escape", none);
+    assert!(app.selection.is_empty());
+}
+
+#[test]
+fn layers_move_into_a_group_and_into_a_scene() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("show.json"),
+        r##"{
+  "format": 1,
+  "name": "t",
+  "size": [200, 100],
+  "layers": [
+    { "name": "g", "type": "group", "children": [] },
+    { "name": "dot", "type": "shape", "shape": { "circle": [0, 0, 4] }, "fill": "#FFFFFF" }
+  ],
+  "scenes": [ { "name": "play", "trigger": "play" } ]
+}
+"##,
+    )
+    .unwrap();
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dir.path().into()));
+    let show = cuelight_core::Root::Show;
+    let _ = app.update(Message::Choose(LayerPath::new(show, [1])));
+    // The menu offers the show, the scene and the group.
+    let choices: Vec<String> = app.move_choices().into_iter().map(|c| c.label).collect();
+    assert_eq!(choices, ["show", "group g", "scene play"]);
+    let _ = app.update(Message::MoveLayers(arrange::Destination::Group(
+        LayerPath::new(show, [0]),
+    )));
+    assert_eq!(
+        tree_lines(&app),
+        ["[show]", "group g", "  shape dot", "[play]"]
+    );
+    assert_eq!(app.selection, [LayerPath::new(show, [0, 0])]);
+    let _ = app.update(Message::MoveLayers(arrange::Destination::Root(
+        cuelight_core::Root::Scene(0),
+    )));
+    assert_eq!(
+        tree_lines(&app),
+        ["[show]", "group g", "[play]", "shape dot"]
+    );
+    assert_eq!(
+        app.selection,
+        [LayerPath::new(cuelight_core::Root::Scene(0), [0])]
+    );
+    let _ = app.update(Message::MoveLayers(arrange::Destination::Root(show)));
+    assert_eq!(
+        tree_lines(&app),
+        ["[show]", "group g", "shape dot", "[play]"]
+    );
+    // A group does not go inside itself.
+    let _ = app.update(Message::Choose(LayerPath::new(show, [0])));
+    let _ = app.update(Message::MoveLayers(arrange::Destination::Group(
+        LayerPath::new(show, [0]),
+    )));
+    assert_eq!(app.status, "cannot move: a group cannot go inside itself");
+}
+
+#[test]
+fn text_in_a_show_without_styles_gets_one_for_its_font() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cuelight-editor-core/tests/fixtures/typed/assets/fonts");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("assets/fonts")).unwrap();
+    for name in ["tiny.fnt", "tiny.png"] {
+        std::fs::copy(
+            fixture.join(name),
+            dir.path().join("assets/fonts").join(name),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.path().join("show.json"),
+        "{\n  \"format\": 1,\n  \"name\": \"t\",\n  \"size\": [200, 100]\n}\n",
+    )
+    .unwrap();
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dir.path().into()));
+    let _ = app.update(Message::AddLayer(cuelight_editor_core::layers::Kind::Text));
+    assert_eq!(app.status, "added text, in a new font style tiny");
+    let show = app.document.as_ref().unwrap().value();
+    assert_eq!(show["fonts"]["tiny"]["file"], "tiny");
+    assert_eq!(show["layers"][0]["font"], "tiny");
+    assert_eq!(tree_lines(&app), ["[show]", "text text"]);
+    let _ = app.update(Message::Undo);
+    let show = app.document.as_ref().unwrap().value();
+    assert!(
+        show.get("fonts").is_none()
+            && show
+                .get("layers")
+                .is_none_or(|l| l.as_array().is_some_and(Vec::is_empty)),
+        "{show}"
+    );
+}

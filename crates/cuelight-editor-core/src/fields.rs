@@ -2,7 +2,8 @@
 //! anchored, how it blends, a text's alignment, a shape's fill, a
 //! sound's playback. The inspector edits them under the properties;
 //! what they are, which kinds of layer have them and how each is typed
-//! is said once, here.
+//! is said once, here. The show's own settings (its name, canvas and
+//! output) are fields the same way, of the kind `show`.
 
 use serde_json::Value;
 
@@ -267,6 +268,53 @@ pub const FIELDS: &[Field] = &[
 /// The layer keys the inspector leaves to other parts of the editor,
 /// and which: the format's every key is either a property, a field
 /// above, or here.
+/// The show's own settings, in the order the inspector lists them.
+pub const SHOW_FIELDS: &[Field] = &[
+    show_field("name", &["name"], Input::Text),
+    show_field("size", &["size"], Input::Pair),
+    show_field("background", &["background"], Input::Colour),
+    show_field(
+        "mode",
+        &["output", "mode"],
+        Input::Choice(&["rgb", "gray2", "gray4"]),
+    ),
+    show_field("tint", &["output", "tint"], Input::Colour),
+    show_field(
+        "scaling",
+        &["output", "scaling"],
+        Input::Choice(&["smooth", "pixel_perfect"]),
+    ),
+    show_field(
+        "edges",
+        &["output", "edges"],
+        Input::Choice(&["soft", "hard"]),
+    ),
+];
+
+const fn show_field(label: &'static str, path: &'static [&'static str], input: Input) -> Field {
+    Field {
+        label,
+        path,
+        input,
+        kinds: &["show"],
+        not: &[],
+        needed: false,
+    }
+}
+
+/// The show's keys the inspector does not edit as settings, and what
+/// edits them instead.
+pub const SHOW_ELSEWHERE: &[(&str, &str)] = &[
+    ("format", "fixed by the engine the show is written for"),
+    ("fonts", "the font styles"),
+    ("variables", "the inputs"),
+    ("values", "the inputs"),
+    ("input", "the inputs"),
+    ("layers", "the layers list (item 24)"),
+    ("scenes", "the layers list (item 24)"),
+    ("passes", "its own editor, not planned yet"),
+];
+
 pub const ELSEWHERE: &[(&str, &str)] = &[
     ("type", "fixed once the layer is made"),
     ("name", "renames (item 28)"),
@@ -295,9 +343,10 @@ pub fn kind(layer: &Value) -> Option<&str> {
         .or_else(|| layer.get("id").map(|_| "part"))
 }
 
-/// The fields a layer of `kind` has.
+/// The fields a layer of `kind` has, or the show's settings for `show`.
 pub fn of(kind: &str) -> impl Iterator<Item = &'static Field> + '_ {
-    FIELDS.iter().filter(move |field| {
+    let table = if kind == "show" { SHOW_FIELDS } else { FIELDS };
+    table.iter().filter(move |field| {
         (field.kinds.is_empty() || field.kinds.contains(&kind)) && !field.not.contains(&kind)
     })
 }
@@ -430,6 +479,9 @@ pub fn set(
 /// `field` when it does not write it: the engine is asked, with the key
 /// taken out. A key the layer cannot do without has no default.
 pub fn is_default(layer: &Value, field: &Field, value: &Value) -> bool {
+    if field.kinds == ["show"] {
+        return show_default(field).is_some_and(|default| crate::edit::same(&default, value));
+    }
     let mut without = layer.clone();
     let Some((last, parents)) = field.path.split_last() else {
         return false;
@@ -447,6 +499,35 @@ pub fn is_default(layer: &Value, field: &Field, value: &Value) -> bool {
         return false;
     };
     read(&loaded, field).is_some_and(|default| crate::edit::same(default, value))
+}
+
+/// What a show has for `field` when it does not write it: the format's
+/// default, or what a host takes for an output setting left out. A show
+/// cannot do without its name and size, which have none.
+pub fn show_default(field: &Field) -> Option<Value> {
+    use cuelight_core::{Edges, OutputMode, Scaling, Show};
+    if matches!(field.path, ["name"] | ["size"]) {
+        return None;
+    }
+    let bare: Show =
+        serde_json::from_value(serde_json::json!({"name": "", "size": [1, 1]})).ok()?;
+    let mut bare = serde_json::to_value(bare).ok()?;
+    *bare.get_mut("output")? = serde_json::json!({
+        "mode": OutputMode::default(),
+        "tint": "#FFFFFF",
+        "scaling": Scaling::default(),
+        "edges": Edges::default(),
+    });
+    read(&bare, field).cloned()
+}
+
+/// What the document writes for `field` of the layer (or show) at
+/// `layer`, if anything.
+pub fn written_value(document: &Document, layer: &Pointer, field: &Field) -> Option<Value> {
+    document
+        .get(&path_of(layer, field))
+        .map(|node| node.value())
+        .filter(|value| !value.is_null())
 }
 
 /// Whether the layer at `layer` writes `field`, rather than leaving it to

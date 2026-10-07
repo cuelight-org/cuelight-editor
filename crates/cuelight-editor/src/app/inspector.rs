@@ -35,7 +35,7 @@ impl App {
             return self.asset_panel(session, i, size);
         }
         let Some(path) = self.selection.last() else {
-            return summary(&self.summary);
+            return self.show_panel();
         };
         let engine = lock(&session.engine);
         let Some(show) = engine.show() else {
@@ -233,10 +233,16 @@ impl App {
                             // its JSON for now.
                             None => text(value.clone()).size(13).width(Fill).boxed(),
                         },
-                        edit::Input::Colour => row![swatch(shown.unwrap_or(fallback)), typed()]
-                            .spacing(4)
-                            .align_y(iced::Center)
-                            .boxed(),
+                        edit::Input::Colour => row![
+                            swatch(
+                                shown.unwrap_or(fallback),
+                                Message::Expand((!unfolded).then_some(property))
+                            ),
+                            typed()
+                        ]
+                        .spacing(4)
+                        .align_y(iced::Center)
+                        .boxed(),
                         edit::Input::Number | edit::Input::Text => typed().boxed(),
                     };
                     (field, note)
@@ -263,7 +269,11 @@ impl App {
                     .field(path, property)
                     .or_else(|| self.placeholder(property))
             {
-                panel = panel.push(channels(property, shown));
+                panel = panel.push(channels(
+                    shown,
+                    move |typed| Message::Type(property, typed),
+                    Message::Apply(property),
+                ));
             }
             if unfolded {
                 for (rank, source) in sources.iter().enumerate() {
@@ -391,9 +401,29 @@ impl App {
         use cuelight_editor_core::assets::Kind;
         use cuelight_editor_core::fields::Input;
         let label = field.field.label;
-        let name = container(text(label).size(13)).width(86).padding([2, 6]);
         let shown = self.field_text(label);
         let fallback = field.default.as_str();
+        // A colour's label, like its swatch, unfolds its channels.
+        let colour = field.editable && field.field.input == Input::Colour;
+        let unfolded = colour && self.unfolded_field == Some(label);
+        let unfold = Message::UnfoldField((!unfolded).then_some(label));
+        let name: Element<'a, Message> = if colour {
+            button(text(label).size(13))
+                .on_press(unfold.clone())
+                .width(86)
+                .padding([2, 6])
+                .style(if unfolded {
+                    button::secondary
+                } else {
+                    button::text
+                })
+                .boxed()
+        } else {
+            container(text(label).size(13))
+                .width(86)
+                .padding([2, 6])
+                .boxed()
+        };
         let error = self.field_typing_error(label);
         let marked = field_style(self.is_field_pending(label), error.is_some());
         let words = |words: Vec<String>| {
@@ -435,7 +465,7 @@ impl App {
                     .on_toggle(move |on| Message::PutField(label, on.to_string()))
                     .size(14)
                     .boxed(),
-                Input::Colour => row![swatch(shown.unwrap_or(fallback)), typed()]
+                Input::Colour => row![swatch(shown.unwrap_or(fallback), unfold), typed()]
                     .spacing(4)
                     .align_y(iced::Center)
                     .boxed(),
@@ -451,10 +481,18 @@ impl App {
         ]
         .spacing(6)
         .align_y(iced::Center);
-        match error {
-            Some(error) => column![line, problem(error)].boxed(),
-            None => line.boxed(),
+        let mut rows = column![line];
+        if let Some(error) = error {
+            rows = rows.push(problem(error));
         }
+        if unfolded {
+            rows = rows.push(channels(
+                shown.unwrap_or(fallback),
+                move |typed| Message::TypeField(label, typed),
+                Message::ApplyField(label),
+            ));
+        }
+        rows.boxed()
     }
 
     /// The layer's text as the document has it, if the document has that
@@ -586,13 +624,14 @@ fn hex([r, g, b, a]: [u8; 4]) -> String {
 }
 
 /// A square of the colour, on the pane's own background so its alpha
-/// shows; an empty one for none.
-fn swatch<'a>(colour: &str) -> Element<'a, Message> {
+/// shows; an empty one for none. A click on it is `on_press`: its
+/// channels unfolded or folded.
+fn swatch<'a>(colour: &str, on_press: Message) -> Element<'a, Message> {
     let fill = (!colour.is_empty()).then(|| {
         let [r, g, b, a] = rgba(colour);
         iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.0)
     });
-    container(space::horizontal().width(14))
+    let square = container(space::horizontal().width(14))
         .width(18)
         .height(18)
         .style(move |theme: &Theme| container::Style {
@@ -603,13 +642,21 @@ fn swatch<'a>(colour: &str) -> Element<'a, Message> {
                 radius: 3.0.into(),
             },
             ..container::Style::default()
-        })
+        });
+    mouse_area(square)
+        .on_press(on_press)
+        .interaction(iced::mouse::Interaction::Pointer)
         .boxed()
 }
 
 /// Sliders for a colour's channels: the field and swatch follow while
-/// dragging, and letting go writes the colour.
-fn channels<'a>(property: Property, colour: &str) -> Element<'a, Message> {
+/// dragging, as `typed` says, and letting go writes the colour
+/// (`apply`).
+fn channels<'a>(
+    colour: &str,
+    typed: impl Fn(String) -> Message + Clone + 'a,
+    apply: Message,
+) -> Element<'a, Message> {
     let now = rgba(colour);
     let mut sliders = Column::<Element<'a, Message>>::new()
         .spacing(2)
@@ -619,14 +666,17 @@ fn channels<'a>(property: Property, colour: &str) -> Element<'a, Message> {
         sliders = sliders.push(
             row![
                 text(name).size(12).width(14),
-                slider(0.0..=255.0, f32::from(value), move |v: f32| {
-                    let mut next = now;
-                    if let Some(channel) = next.get_mut(i) {
-                        *channel = v.round().clamp(0.0, 255.0) as u8;
+                slider(0.0..=255.0, f32::from(value), {
+                    let typed = typed.clone();
+                    move |v: f32| {
+                        let mut next = now;
+                        if let Some(channel) = next.get_mut(i) {
+                            *channel = v.round().clamp(0.0, 255.0) as u8;
+                        }
+                        typed(hex(next))
                     }
-                    Message::Type(property, hex(next))
                 })
-                .on_release(Message::Apply(property))
+                .on_release(apply.clone())
                 .width(Fill),
                 text(value.to_string()).size(12).width(28),
             ]
@@ -708,9 +758,47 @@ fn describe_source(influence: &Influence) -> String {
     }
 }
 
+impl App {
+    /// The show itself, while nothing is picked: its settings and how it
+    /// is output, edited like a layer's fields, then what it holds.
+    fn show_panel(&self) -> Column<Element<'_, Message>> {
+        if self.layer_fields.is_empty() {
+            return summary(&self.summary);
+        }
+        let mut panel = Column::new().spacing(4).padding(12);
+        let name = self.field_text("name").unwrap_or(&self.summary.name);
+        panel = panel.push(text(name.to_owned()).size(16).boxed());
+        panel = panel.push(
+            text(format!("show, format {}", self.summary.format))
+                .size(12)
+                .boxed(),
+        );
+        let (output, own): (Vec<_>, Vec<_>) = self
+            .layer_fields
+            .iter()
+            .partition(|f| f.field.path.first() == Some(&"output"));
+        for (heading, rows) in [("SHOW", own), ("OUTPUT", output)] {
+            panel = panel.push(container(text(heading).size(12)).padding([6, 0]).boxed());
+            for field in rows {
+                panel = panel.push(self.field_row(field));
+            }
+        }
+        panel = panel.push(container(text("CONTENTS").size(12)).padding([6, 0]).boxed());
+        panel.push(facts(&self.summary, &["show", "canvas"]).padding(0).boxed())
+    }
+}
+
 fn summary(summary: &Summary) -> Column<Element<'_, Message>> {
+    facts(summary, &[])
+}
+
+/// The show's facts as the open found them, but the lines in `leave`.
+fn facts<'a>(summary: &'a Summary, leave: &[&str]) -> Column<Element<'a, Message>> {
     let mut rows = Column::new().spacing(6).padding(16);
     for (label, value) in opened::lines(summary) {
+        if leave.contains(&label.as_str()) {
+            continue;
+        }
         rows = rows.push(
             column![text(label).size(12), text(value).size(14)]
                 .spacing(2)

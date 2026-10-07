@@ -106,15 +106,13 @@ impl App {
         Task::none()
     }
 
-    /// Take a field out of the picked layer, back to its default.
+    /// Take a field out of the picked layer (or the show), back to its
+    /// default.
     pub(super) fn reset_field(&mut self, label: &'static str) -> Task<Message> {
-        let Some(path) = self.selection.last().cloned() else {
+        let Some(field) = self.field_named(label) else {
             return Task::none();
         };
-        let Some(field) = fields::FIELDS.iter().find(|f| f.label == label) else {
-            return Task::none();
-        };
-        let Some(at) = self.layer_pointer(&path) else {
+        let Some(at) = self.fields_owner() else {
             return Task::none();
         };
         let Some(document) = &mut self.document else {
@@ -203,7 +201,7 @@ impl App {
         let labels: Vec<&'static str> = self
             .field_typed
             .as_ref()
-            .filter(|(path, _)| self.selection.last() == Some(path))
+            .filter(|(path, _)| self.selection.last() == path.as_ref())
             .map(|(_, typed)| typed.iter().map(|(l, _)| *l).collect())
             .unwrap_or_default();
         for label in labels {
@@ -221,10 +219,9 @@ impl App {
         self.typed
             .as_ref()
             .is_some_and(|(path, typed)| here(path) && !typed.is_empty())
-            || self
-                .field_typed
-                .as_ref()
-                .is_some_and(|(path, typed)| here(path) && !typed.is_empty())
+            || self.field_typed.as_ref().is_some_and(|(path, typed)| {
+                self.selection.last() == path.as_ref() && !typed.is_empty()
+            })
     }
 
     /// Why what is typed into a property's field does not read, if it
@@ -241,14 +238,14 @@ impl App {
     /// The same for one of the layer's other fields.
     pub(super) fn field_typing_error(&self, label: &str) -> Option<String> {
         let (path, typed) = self.field_typed.as_ref()?;
-        if self.selection.last() != Some(path) {
+        if self.selection.last() != path.as_ref() {
             return None;
         }
         let (_, text) = typed.iter().find(|(l, _)| *l == label)?;
         if text.trim().is_empty() {
             return None;
         }
-        let field = fields::FIELDS.iter().find(|f| f.label == label)?;
+        let field = self.field_named(label)?;
         fields::parse(field, text).err()
     }
 
@@ -260,7 +257,7 @@ impl App {
     /// The same for one of the layer's other fields.
     pub(super) fn is_field_pending(&self, label: &str) -> bool {
         self.field_typed.as_ref().is_some_and(|(path, typed)| {
-            self.selection.last() == Some(path) && typed.iter().any(|(l, _)| *l == label)
+            self.selection.last() == path.as_ref() && typed.iter().any(|(l, _)| *l == label)
         })
     }
 
@@ -343,10 +340,15 @@ impl App {
     }
 
     /// The picked layer's fields as their rows show them, after whatever
-    /// just changed: what the layer writes, or the engine's default.
+    /// just changed: what the layer writes, or the engine's default. With
+    /// nothing picked, the show's settings.
     pub(super) fn refresh_fields_of_layer(&mut self) {
         self.layer_fields.clear();
-        let (Some(session), Some(path)) = (&self.session, self.selection.last()) else {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let Some(path) = self.selection.last() else {
+            self.refresh_show_settings();
             return;
         };
         let Some(at) = self.layer_pointer(path) else {
@@ -386,10 +388,54 @@ impl App {
         }
     }
 
+    /// The show's settings as their rows show them: what the document
+    /// writes, read key by key, or what the show has without it.
+    fn refresh_show_settings(&mut self) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let root = Pointer::default();
+        for field in fields::SHOW_FIELDS {
+            let own = fields::written_value(document, &root, field);
+            let default = fields::show_default(field);
+            let value = own.as_ref().or(default.as_ref());
+            self.layer_fields.push(LayerField {
+                field,
+                shown: own.as_ref().and_then(|v| fields::show(field, v)),
+                default: default
+                    .as_ref()
+                    .and_then(|v| fields::show(field, v))
+                    .unwrap_or_default(),
+                raw: value.map(ToString::to_string).unwrap_or_default(),
+                editable: value.is_none_or(|v| fields::show(field, v).is_some()),
+                written: own.is_some(),
+            });
+        }
+    }
+
+    /// One of the rows' fields by its label, from the rows refreshed
+    /// last: the engine's lock, which the inspector holds while it lays
+    /// the rows out, is not taken.
+    fn field_named(&self, label: &str) -> Option<&'static fields::Field> {
+        self.layer_fields
+            .iter()
+            .find(|f| f.field.label == label)
+            .map(|f| f.field)
+    }
+
+    /// Where the fields being edited sit in the document: the picked
+    /// layer, or the show's root while nothing is picked.
+    fn fields_owner(&self) -> Option<Pointer> {
+        match self.selection.last() {
+            Some(path) => self.layer_pointer(path),
+            None => Some(Pointer::default()),
+        }
+    }
+
     /// What a field's row shows: what was typed into it, or its value.
     pub(super) fn field_text(&self, label: &str) -> Option<&str> {
         if let Some((path, typed)) = &self.field_typed
-            && self.selection.last() == Some(path)
+            && self.selection.last() == path.as_ref()
             && let Some((_, text)) = typed.iter().find(|(l, _)| *l == label)
         {
             return Some(text);
@@ -401,9 +447,7 @@ impl App {
     }
 
     pub(super) fn type_into_field(&mut self, label: &'static str, text: String) {
-        let Some(path) = self.selection.last().cloned() else {
-            return;
-        };
+        let path = self.selection.last().cloned();
         match &mut self.field_typed {
             Some((typed_for, typed)) if *typed_for == path => {
                 typed.retain(|(l, _)| *l != label);
@@ -414,12 +458,9 @@ impl App {
     }
 
     /// Enter in a field's row, a toggle flipped or a word picked: write
-    /// it into the layer and reload at the playhead.
+    /// it into the layer (or the show) and reload at the playhead.
     pub(super) fn apply_field(&mut self, label: &'static str) -> Task<Message> {
-        let Some(path) = self.selection.last().cloned() else {
-            return Task::none();
-        };
-        let Some(field) = fields::FIELDS.iter().find(|f| f.label == label) else {
+        let Some(field) = self.field_named(label) else {
             return Task::none();
         };
         let Some(typed) = self.field_text(label).map(str::to_owned) else {
@@ -444,17 +485,20 @@ impl App {
                 return Task::none();
             }
         };
-        let Some(at) = self.layer_pointer(&path) else {
+        let Some(at) = self.fields_owner() else {
             return Task::none();
         };
         let Some(document) = &mut self.document else {
             return Task::none();
         };
         // The default is not written down: setting it takes the key out.
-        if document
-            .get(&at)
-            .is_some_and(|layer| fields::is_default(&layer.value(), field, &value))
-        {
+        // The show's defaults need nothing of what it writes.
+        let owner = if self.selection.is_empty() {
+            Some(serde_json::Value::Null)
+        } else {
+            document.get(&at).map(|layer| layer.value())
+        };
+        if owner.is_some_and(|owner| fields::is_default(&owner, field, &value)) {
             let written = fields::written(document, &at, field);
             if let Some((_, typed)) = &mut self.field_typed {
                 typed.retain(|(l, _)| *l != label);

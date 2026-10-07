@@ -1171,13 +1171,18 @@ fn an_audio_layer_draws_its_inspector() {
     };
     let (mut app, _) = App::new();
     let _ = app.update(Message::Dropped(dashboard));
-    let relay = LayerPath::new(cuelight_core::Root::Show, [5]);
-    let _ = app.update(Message::Choose(relay));
+    // Whichever of its audio layers comes first.
+    let audio = app.rows.iter().find_map(|row| match row {
+        Row::Layer { path, kind, .. } if *kind == "audio" => Some(path.clone()),
+        _ => None,
+    });
+    let _ = app.update(Message::Choose(audio.expect("the dashboard has a sound")));
     let mut ui = simulator(app.view());
-    assert!(ui.find("relay").is_ok());
     assert!(ui.find("LAYER").is_ok());
-    // A sound is heard or not, at its gain; it has no place or look.
+    // A sound is heard or not, at its gain, from where it is between the
+    // speakers; it has no place or look.
     assert!(ui.find("gain").is_ok());
+    assert!(ui.find("pan").is_ok());
     assert!(ui.find("rotation").is_err());
     assert!(ui.find("blend").is_err());
 }

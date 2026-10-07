@@ -247,6 +247,8 @@ pub struct App {
     /// The SVG path data typed for a path the add menu makes, while it
     /// waits for it.
     path_typed: Option<String>,
+    /// The add button's kinds are open under it.
+    adding_open: bool,
     /// The modifier keys held: Shift or Ctrl with a click in the tree
     /// adds to the selection.
     held: keyboard::Modifiers,
@@ -475,6 +477,8 @@ pub enum Message {
     /// The modifier keys held changed.
     Modifiers(keyboard::Modifiers),
     /// The add menu picked a kind of layer.
+    /// The add button opened or closed its kinds.
+    ToggleAdding,
     AddLayer(cuelight_editor_core::layers::Kind),
     /// SVG path data typed for a new path, then added, or not.
     TypePath(String),
@@ -620,6 +624,7 @@ impl App {
             log_top: 0.0,
             closing: false,
             path_typed: None,
+            adding_open: false,
             held: keyboard::Modifiers::default(),
             solo: None,
             strip_frames: "8".to_owned(),
@@ -1288,7 +1293,14 @@ impl App {
                 self.held = held;
                 Task::none()
             }
-            Message::AddLayer(kind) => self.add_layer(kind),
+            Message::AddLayer(kind) => {
+                self.adding_open = false;
+                self.add_layer(kind)
+            }
+            Message::ToggleAdding => {
+                self.adding_open = !self.adding_open;
+                Task::none()
+            }
             Message::TypePath(path) => {
                 self.path_typed = Some(path);
                 Task::none()

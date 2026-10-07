@@ -1882,11 +1882,21 @@ fn a_show_with_one_layer_of_each_kind_is_built_from_empty() {
     let (mut app, dir) = open_with_assets(
         "{\n  \"format\": 1,\n  \"name\": \"t\",\n  \"size\": [200, 100],\n  \"fonts\": {\n    \"body\": { \"file\": \"tiny\" }\n  }\n}\n",
     );
-    // The menu lists every kind.
+    // The add button opens a button for every kind.
     {
         let mut ui = simulator(app.view());
-        assert!(ui.find("Add layer").is_ok());
         assert!(ui.find("Move to").is_ok());
+        assert!(ui.find("Rectangle").is_err(), "closed at first");
+        let _ = ui.click("+ Add layer");
+        for message in ui.into_messages() {
+            let _ = app.update(message);
+        }
+    }
+    {
+        let mut ui = simulator(app.view());
+        for kind in cuelight_editor_core::layers::Kind::ALL {
+            assert!(ui.find(kind.label()).is_ok(), "{kind:?}");
+        }
     }
     use cuelight_editor_core::layers::Kind;
     for kind in Kind::ALL {

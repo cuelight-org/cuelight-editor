@@ -9,7 +9,7 @@ use cuelight_editor_core::assets;
 use cuelight_editor_core::document::{Part, Pointer};
 use cuelight_editor_core::layers::{self, Kind, Making};
 use iced::widget::Widget as _;
-use iced::widget::{Column, button, pick_list, row, text, text_input};
+use iced::widget::{Column, button, container, pick_list, row, text, text_input, tooltip};
 use iced::{Element, Fill, Task};
 
 use super::{App, Message, Row, tree};
@@ -19,15 +19,6 @@ use super::{App, Message, Row, tree};
 pub(super) struct Adding {
     pub kind: Kind,
     pub why_not: Option<&'static str>,
-}
-
-impl Adding {
-    fn label(&self) -> String {
-        match self.why_not {
-            Some(why) => format!("{} ({why})", self.kind.label()),
-            None => self.kind.label().to_owned(),
-        }
-    }
 }
 
 /// Where the move menu can put the picked layers: the show's own
@@ -58,13 +49,47 @@ impl App {
                 why_not: layers::unavailable(kind, &making).filter(|_| kind != Kind::Path),
             })
             .collect();
-        let add: Element<'a, Message> = pick_list(None::<Adding>, adding, Adding::label)
-            .placeholder("Add layer")
-            .on_select(|adding: Adding| Message::AddLayer(adding.kind))
-            .width(Fill)
-            .text_size(12)
-            .padding([2, 6])
-            .boxed();
+        // A button that opens the kinds as buttons of their own: what can
+        // be added is in view, and what cannot says why on hover.
+        let add: Element<'a, Message> = button(
+            text(if self.adding_open {
+                "- Add layer"
+            } else {
+                "+ Add layer"
+            })
+            .size(12),
+        )
+        .on_press(Message::ToggleAdding)
+        .width(Fill)
+        .padding([2, 6])
+        .style(if self.adding_open {
+            button::secondary
+        } else {
+            button::primary
+        })
+        .boxed();
+        let kinds = adding.into_iter().map(|adding| {
+            let kind = button(text(adding.kind.label()).size(12))
+                .on_press_maybe(
+                    adding
+                        .why_not
+                        .is_none()
+                        .then_some(Message::AddLayer(adding.kind)),
+                )
+                .padding([2, 6])
+                .style(button::secondary);
+            match adding.why_not {
+                Some(why) => tooltip(
+                    kind,
+                    container(text(why).size(12))
+                        .padding(6)
+                        .style(container::bordered_box),
+                    tooltip::Position::Bottom,
+                )
+                .boxed(),
+                None => kind.boxed(),
+            }
+        });
         let moves = self.move_choices();
         let moving = pick_list(None::<MoveChoice>, moves, |c: &MoveChoice| c.label.clone())
             .placeholder("Move to")
@@ -103,21 +128,29 @@ impl App {
         };
         let mut bar = Column::<Element<'a, Message>>::new()
             .spacing(4)
-            .push(row![add, moving].spacing(6).boxed())
-            .push(
-                row![
-                    small("Up", up, picked || scene),
-                    small("Down", down, picked || scene),
-                    small("Group", Message::GroupLayers, picked),
-                    small("Ungroup", Message::Ungroup, group),
-                    small("Duplicate", Message::DuplicateLayers, picked),
-                    small("Delete", delete, picked || scene),
-                    small("Add scene", Message::AddScene, self.document.is_some()),
-                ]
-                .spacing(4)
-                .wrap()
-                .boxed(),
+            .push(row![add, moving].spacing(6).boxed());
+        if self.adding_open {
+            bar = bar.push(
+                iced::widget::Row::from_iter(kinds)
+                    .spacing(4)
+                    .wrap()
+                    .boxed(),
             );
+        }
+        let mut bar = bar.push(
+            row![
+                small("Up", up, picked || scene),
+                small("Down", down, picked || scene),
+                small("Group", Message::GroupLayers, picked),
+                small("Ungroup", Message::Ungroup, group),
+                small("Duplicate", Message::DuplicateLayers, picked),
+                small("Delete", delete, picked || scene),
+                small("Add scene", Message::AddScene, self.document.is_some()),
+            ]
+            .spacing(4)
+            .wrap()
+            .boxed(),
+        );
         // A path waits for its data.
         if let Some(path) = &self.path_typed {
             bar = bar.push(

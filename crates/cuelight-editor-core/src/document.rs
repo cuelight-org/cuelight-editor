@@ -499,6 +499,132 @@ impl Document {
         Ok(())
     }
 
+    /// Put `value` into the array `path`'s parent names, at the index
+    /// `path` ends with, laid out like the items around it: on a line of
+    /// its own in a list that has its items on lines, and a list that
+    /// was empty gets its lines.
+    pub fn insert_item(&mut self, path: &Pointer, value: Value) -> Result<(), EditError> {
+        let (list, _) = path
+            .split()
+            .ok_or_else(|| EditError::NotAContainer(path.clone()))?;
+        let node = Node::from_value(&value, &self.item_indent(&list));
+        self.place(path, node)
+    }
+
+    /// Put a copy of the item at `from` at `to`, as `insert_item` does,
+    /// keeping its text as written and indenting it for its new place.
+    pub fn copy_item(&mut self, from: &Pointer, to: &Pointer) -> Result<(), EditError> {
+        let mut node = self
+            .get(from)
+            .ok_or_else(|| EditError::NotFound(from.clone()))?
+            .clone();
+        let was = node_indent(&node).unwrap_or_else(|| self.line_indent(from));
+        let (list, _) = to
+            .split()
+            .ok_or_else(|| EditError::NotAContainer(to.clone()))?;
+        reindent(&mut node, &was, &self.item_indent(&list));
+        self.place(to, node)
+    }
+
+    /// Move the item at `from` to `to`, where `to` says where it goes
+    /// once it is out of its old place, keeping its text as written.
+    pub fn move_item(&mut self, from: &Pointer, to: &Pointer) -> Result<(), EditError> {
+        let mut node = self
+            .get(from)
+            .ok_or_else(|| EditError::NotFound(from.clone()))?
+            .clone();
+        let was = node_indent(&node).unwrap_or_else(|| self.line_indent(from));
+        self.remove(from)?;
+        let (list, _) = to
+            .split()
+            .ok_or_else(|| EditError::NotAContainer(to.clone()))?;
+        reindent(&mut node, &was, &self.item_indent(&list));
+        self.place(to, node)
+    }
+
+    /// Put `node`, already indented for it, where `path` says in an
+    /// array. An empty array is written again with the node on a line of
+    /// its own, since an insert into `[]` would leave it on the
+    /// bracket's line.
+    fn place(&mut self, path: &Pointer, node: Node) -> Result<(), EditError> {
+        let (list, step) = path
+            .split()
+            .ok_or_else(|| EditError::NotAContainer(path.clone()))?;
+        let empty = match self.get(&list) {
+            Some(Node::Array { items, .. }) => items.is_empty(),
+            Some(_) => return Err(EditError::NotAContainer(path.clone())),
+            None => return Err(EditError::NotFound(list)),
+        };
+        if !empty {
+            let item = Item {
+                before: String::new(),
+                key: String::new(),
+                node,
+            };
+            let container = self
+                .root
+                .get_mut(&list.0)
+                .ok_or_else(|| EditError::NotFound(list.clone()))?;
+            let (index, item, shifted) = container.insert(step, item, path)?;
+            self.record(Edit::Insert {
+                path: path.clone(),
+                index,
+                item,
+                shifted,
+            });
+            return Ok(());
+        }
+        if *step != Part::Index(0) {
+            return Err(EditError::OutOfRange(path.clone()));
+        }
+        let after = Node::Array {
+            items: vec![Item {
+                before: format!("\n{}", self.item_indent(&list)),
+                key: String::new(),
+                node,
+            }],
+            tail: format!("\n{}", self.line_indent(&list)),
+        };
+        let target = self
+            .root
+            .get_mut(&list.0)
+            .ok_or_else(|| EditError::NotFound(list.clone()))?;
+        let before = std::mem::replace(target, after.clone());
+        self.record(Edit::Set {
+            path: list,
+            before,
+            after,
+        });
+        Ok(())
+    }
+
+    /// The indentation an item of the array at `list` is written with:
+    /// what its items on lines have, or a step in from the line the
+    /// array is on.
+    fn item_indent(&self, list: &Pointer) -> String {
+        match self.root.get(&list.0) {
+            Some(Node::Array { items, .. }) if items.iter().any(|i| i.before.contains('\n')) => {
+                self.indent_in(list)
+            }
+            _ => format!("{}  ", self.line_indent(list)),
+        }
+    }
+
+    /// The indentation of the line the node at `path` is on: its own, or
+    /// that of the nearest node above it that starts a line.
+    fn line_indent(&self, path: &Pointer) -> String {
+        let mut at = path.clone();
+        while let Some((parent, step)) = at.split() {
+            if let Some(item) = self.root.get(&parent.0).and_then(|c| c.item(step))
+                && item.before.contains('\n')
+            {
+                return indent_of(&item.before);
+            }
+            at = parent;
+        }
+        String::new()
+    }
+
     /// Replace the whole document with `text`, as one step: undoing it
     /// gives back the text it replaced. The blank space around the root
     /// stays as it was.
@@ -645,6 +771,36 @@ impl Document {
                 .unwrap_or_default(),
             _ => String::new(),
         }
+    }
+}
+
+/// The indentation a container spanning lines is written at, as its
+/// closing bracket's line has it; `None` for a node on one line.
+fn node_indent(node: &Node) -> Option<String> {
+    match node {
+        Node::Array { tail, .. } | Node::Object { tail, .. } if tail.contains('\n') => {
+            Some(indent_of(tail))
+        }
+        _ => None,
+    }
+}
+
+/// Move every line of `node` after its first from the indentation
+/// `from` to `to`, keeping what each has beyond it.
+fn reindent(node: &mut Node, from: &str, to: &str) {
+    let shift = |gap: &mut String| {
+        if let Some(i) = gap.rfind('\n') {
+            let (head, rest) = gap.split_at(i + 1);
+            let rest = rest.strip_prefix(from).unwrap_or(rest);
+            *gap = format!("{head}{to}{rest}");
+        }
+    };
+    if let Node::Array { items, tail } | Node::Object { items, tail } = node {
+        for item in items {
+            shift(&mut item.before);
+            reindent(&mut item.node, from, to);
+        }
+        shift(tail);
     }
 }
 

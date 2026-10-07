@@ -166,44 +166,11 @@ impl App {
     /// Add a style drawing with the font file `font`, named after it, and
     /// pick it: an outline font gets a size, which it needs.
     pub(super) fn add_style(&mut self, font: String) -> Task<Message> {
-        let outline = self.session.as_ref().is_some_and(|s| {
-            lock(&s.engine)
-                .outline_fonts()
-                .any(|(name, _)| name == font)
-        });
-        let taken = |name: &str| {
-            self.document
-                .as_ref()
-                .is_some_and(|d| d.get(&style_pointer(name)).is_some())
-        };
-        let name = (1..)
-            .map(|n| {
-                if n == 1 {
-                    font.clone()
-                } else {
-                    format!("{font}_{n}")
-                }
-            })
-            .find(|name| !taken(name))
-            .unwrap_or_else(|| font.clone());
-        let style = if outline {
-            serde_json::json!({"file": font, "size": 16})
-        } else {
-            serde_json::json!({"file": font})
-        };
+        let (name, style) = self.new_style(&font);
         let Some(document) = &mut self.document else {
             return Task::none();
         };
-        let fonts = cuelight_editor_core::document::Pointer::default().then(
-            cuelight_editor_core::document::Part::Key("fonts".to_owned()),
-        );
-        let done = if document.get(&fonts).is_some() {
-            document.insert(&style_pointer(&name), style)
-        } else {
-            let mut all = serde_json::Map::new();
-            all.insert(name.clone(), style);
-            document.insert(&fonts, Value::Object(all))
-        };
+        let done = put_style(document, &name, style);
         if let Err(error) = done {
             self.status = format!("could not add a style: {error}");
             return Task::none();
@@ -223,6 +190,38 @@ impl App {
             }
         }
         Task::none()
+    }
+
+    /// A style drawing with the font file `font`: named after it, or
+    /// after it with `_2`, `_3`... when that is taken, and with a size
+    /// for an outline font, which needs one.
+    pub(super) fn new_style(&self, font: &str) -> (String, Value) {
+        let outline = self.session.as_ref().is_some_and(|s| {
+            lock(&s.engine)
+                .outline_fonts()
+                .any(|(name, _)| name == font)
+        });
+        let taken = |name: &str| {
+            self.document
+                .as_ref()
+                .is_some_and(|d| d.get(&style_pointer(name)).is_some())
+        };
+        let name = (1..)
+            .map(|n| {
+                if n == 1 {
+                    font.to_owned()
+                } else {
+                    format!("{font}_{n}")
+                }
+            })
+            .find(|name| !taken(name))
+            .unwrap_or_else(|| font.to_owned());
+        let style = if outline {
+            serde_json::json!({"file": font, "size": 16})
+        } else {
+            serde_json::json!({"file": font})
+        };
+        (name, style)
     }
 
     /// Give the picked style the name typed for it, and every text layer
@@ -355,5 +354,21 @@ impl App {
             }
         }
         Task::none()
+    }
+}
+
+/// Put the style `name` into the show's `fonts`, made when missing.
+pub(super) fn put_style(
+    document: &mut cuelight_editor_core::document::Document,
+    name: &str,
+    style: Value,
+) -> Result<(), cuelight_editor_core::document::EditError> {
+    let fonts = Pointer::default().then(Part::Key("fonts".to_owned()));
+    if document.get(&fonts).is_some() {
+        document.insert(&style_pointer(name), style)
+    } else {
+        let mut all = serde_json::Map::new();
+        all.insert(name.to_owned(), style);
+        document.insert(&fonts, Value::Object(all))
     }
 }

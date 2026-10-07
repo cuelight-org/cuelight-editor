@@ -834,7 +834,20 @@ impl App {
         panel = panel.push(self.list_panel(List::Keys));
         panel = panel.push(self.list_panel(List::Variables));
         panel = panel.push(container(text("CONTENTS").size(12)).padding([6, 0]).boxed());
-        panel.push(facts(&self.summary, &["show", "canvas"]).padding(0).boxed())
+        panel = panel.push(facts(&self.summary, &["show", "canvas"]).padding(0).boxed());
+        // The show's own keys as written; its layers are each in their
+        // own inspector.
+        if let Some(document) = &self.document {
+            panel = panel.push(container(text("JSON").size(12)).padding([6, 0]).boxed());
+            panel = panel.push(
+                text("layers and scenes counted, each layer's own in its inspector")
+                    .size(12)
+                    .boxed(),
+            );
+            let json = document.text_shortened(&["layers", "scenes"]);
+            panel = panel.push(json_text(&json, &theme(self)));
+        }
+        panel
     }
 }
 

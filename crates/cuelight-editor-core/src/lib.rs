@@ -18,6 +18,7 @@ pub mod placement;
 pub mod save;
 pub mod scenes;
 pub mod session;
+pub mod solo;
 pub mod specimen;
 pub mod syntax;
 pub mod tree;

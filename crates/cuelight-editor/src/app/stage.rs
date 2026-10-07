@@ -11,7 +11,7 @@ use iced::widget::{
 };
 use iced::{Element, Fill, Size, Task, Theme};
 
-use super::{App, Message, Zoom};
+use super::{App, Message, SoloMessage, Zoom};
 use crate::stage::{Pick, Stage};
 use cuelight_editor_core::session::Session;
 use cuelight_editor_core::tree::{self, Row};
@@ -60,7 +60,7 @@ impl App {
             }
             b
         };
-        let bar = row![
+        let mut bar = row![
             zoom_button("Fit", Zoom::Fit),
             zoom_button("100%", Zoom::Scale(1.0)),
             button(text("-").size(13)).on_press(Message::ZoomBy(1.0 / Zoom::STEP)),
@@ -69,18 +69,42 @@ impl App {
         ]
         .spacing(6)
         .align_y(iced::Center);
+        if self.solo.is_none() {
+            bar = bar.push(space::horizontal().boxed()).push(
+                button(text("Solo").size(13))
+                    .on_press_maybe(
+                        (!self.selection.is_empty()).then_some(Message::Solo(SoloMessage::Enter)),
+                    )
+                    .boxed(),
+            );
+        }
 
-        let stage = Stage {
-            engine: session.engine.clone(),
-            revision: session.revision,
-            selection: self.selection.clone(),
-            guides: self.grab.as_ref().map_or([None, None], |grab| grab.guides),
-            on_pick: Message::Pick,
-            on_press: Message::Press,
-            on_grab: Message::Grab,
-            on_drag: Message::Drag,
-            on_release: || Message::Release,
-            whole: Default::default(),
+        let stage = match &self.solo {
+            // Soloing, the stage is the solo's, and a click presses it.
+            Some(solo) => Stage {
+                engine: solo.session.engine.clone(),
+                revision: solo.session.revision,
+                selection: Vec::new(),
+                guides: [None, None],
+                on_pick: |at, _| Message::Solo(SoloMessage::Press(at)),
+                on_press: |at| Message::Solo(SoloMessage::Press(at)),
+                on_grab: Message::Grab,
+                on_drag: Message::Drag,
+                on_release: || Message::Release,
+                whole: Default::default(),
+            },
+            None => Stage {
+                engine: session.engine.clone(),
+                revision: session.revision,
+                selection: self.selection.clone(),
+                guides: self.grab.as_ref().map_or([None, None], |grab| grab.guides),
+                on_pick: Message::Pick,
+                on_press: Message::Press,
+                on_grab: Message::Grab,
+                on_drag: Message::Drag,
+                on_release: || Message::Release,
+                whole: Default::default(),
+            },
         }
         .widget(w, h);
         // The pane fills the room, with the margin outside it, and is
@@ -102,8 +126,13 @@ impl App {
                 style.gap = Some(theme.palette().background.weak.color.into());
                 style
             });
+        let solo_bar = self
+            .solo
+            .as_ref()
+            .map(|solo| container(self.solo_bar(solo)).padding([4, 8]));
         column![
             container(bar).padding([4, 8]).height(BAR),
+            solo_bar,
             container(scrolled).padding(MARGIN).width(Fill).height(Fill)
         ]
         .width(Fill)

@@ -28,6 +28,7 @@ fn the_command_line_is_read() {
             zoom: Some(2.0),
             pick: Some([10.0, 20.0]),
             asset: Some("robot".to_owned()),
+            solo: false,
             trigger: Vec::new(),
             silent: true,
             screenshot: Some("out.png".into()),
@@ -1189,7 +1190,7 @@ fn an_audio_layer_draws_its_inspector() {
 
 /// The examples checkout, beside this repository or where
 /// `CUELIGHT_EXAMPLES` says.
-fn examples() -> Option<std::path::PathBuf> {
+pub(super) fn examples() -> Option<std::path::PathBuf> {
     let dir = std::env::var_os("CUELIGHT_EXAMPLES")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {

@@ -56,6 +56,7 @@ fn shows_what_it_opened() {
     let mut ui = simulator(app.view());
     assert!(ui.find("show, format 1").is_ok());
     assert_eq!(app.field_text("size"), Some("64, 32"));
+    assert!(ui.find("JSON").is_ok(), "the show's JSON is shown");
     assert!(ui.find("Play").is_ok(), "an opened show is paused at 0");
 }
 

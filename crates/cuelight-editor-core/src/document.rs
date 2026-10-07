@@ -290,6 +290,36 @@ impl Document {
         self.root.get(&path.0)
     }
 
+    /// The root object as the file has it, but a list under one of the
+    /// keys in `shorten` is given as how many items it holds: the show's
+    /// own settings without its layers. Nested values keep the file's
+    /// lines and indents.
+    pub fn text_shortened(&self, shorten: &[&str]) -> String {
+        let Node::Object { items, .. } = &self.root else {
+            return self.text();
+        };
+        let mut out = String::from("{");
+        for (i, item) in items.iter().enumerate() {
+            out.push_str(if i == 0 { "\n  " } else { ",\n  " });
+            out.push_str(item.key.trim());
+            out.push(' ');
+            let name = item
+                .key
+                .trim()
+                .trim_end_matches(':')
+                .trim()
+                .trim_matches('"');
+            match &item.node {
+                Node::Array { items, .. } if shorten.contains(&name) => {
+                    out.push_str(&format!("[ {} {name} ]", items.len()));
+                }
+                node => node.write(&mut out),
+            }
+        }
+        out.push_str("\n}");
+        out
+    }
+
     /// The text of the node at `path` as the file has it, its lines after
     /// the first moved left by the indent they share, so it reads as if
     /// it stood alone: what the author wrote, and nothing the engine
@@ -1005,6 +1035,16 @@ mod tests {
   "scenes": []
 }
 "#;
+
+    #[test]
+    fn a_show_is_shown_without_its_layers() {
+        let text = "{\n  \"name\": \"t\",\n  \"output\": {\n    \"mode\": \"gray4\"\n  },\n  \"layers\": [\n    {\"name\": \"a\"},\n    {\"name\": \"b\"}\n  ]\n}\n";
+        let document = Document::parse(text).unwrap();
+        assert_eq!(
+            document.text_shortened(&["layers", "scenes"]),
+            "{\n  \"name\": \"t\",\n  \"output\": {\n    \"mode\": \"gray4\"\n  },\n  \"layers\": [ 2 layers ]\n}"
+        );
+    }
 
     #[test]
     fn a_document_reads_back_byte_for_byte() {

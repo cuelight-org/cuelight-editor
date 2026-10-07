@@ -34,12 +34,16 @@ pub fn input(property: Property) -> Option<Input> {
         | Property::Reveal
         | Property::Frame
         | Property::Gain
+        | Property::Pan
         | Property::TileX
         | Property::TileY => Some(Input::Number),
         Property::Text => Some(Input::Text),
         Property::Visible => Some(Input::Toggle),
         Property::Tint => Some(Input::Colour),
         Property::Font | Property::Sound | Property::Video => Some(Input::Choice),
+        // An image layer's picture is set by its `image` or `vector`
+        // field; as a property it is shown, bound or keyed, not typed.
+        Property::Image => None,
     }
 }
 

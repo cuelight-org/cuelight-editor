@@ -802,7 +802,8 @@ fn step(property: Property) -> f64 {
         | Property::ScaleX
         | Property::ScaleY
         | Property::Reveal
-        | Property::Gain => 0.01,
+        | Property::Gain
+        | Property::Pan => 0.01,
         _ => 1.0,
     }
 }

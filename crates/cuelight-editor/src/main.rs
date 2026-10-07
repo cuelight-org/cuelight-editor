@@ -23,6 +23,8 @@ pub fn main() -> iced::Result {
         .font(iced::Font::new("Atkinson Hyperlegible"))
         .title(App::title)
         .theme(cuelight_editor::app::window_theme)
+        // Closing with unsaved edits asks first.
+        .exit_on_close_request(false)
         .subscription(App::subscription)
         .window_size((1100.0, 700.0))
         .run()

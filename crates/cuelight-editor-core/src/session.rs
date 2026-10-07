@@ -129,6 +129,13 @@ impl Session {
         self.revision += 1;
     }
 
+    /// Play by another driver, the same one renamed: it takes over at
+    /// the next seek or reload.
+    pub fn set_driver(&mut self, driver: Option<Driver>) {
+        self.player = driver.clone().map(DriverPlayer::new);
+        self.driver = driver;
+    }
+
     /// Whether the show came with a driver at all.
     pub fn has_driver(&self) -> bool {
         self.driver.is_some()

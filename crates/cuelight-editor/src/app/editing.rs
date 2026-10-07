@@ -778,6 +778,8 @@ impl App {
         }
         let text = document.text();
         self.typed = None;
+        self.rename = None;
+        self.follow_driver();
         self.status = match self.reload_text(&text, true) {
             Ok(()) => (if redo { "redone" } else { "undone" }).to_owned(),
             Err(error) => error,

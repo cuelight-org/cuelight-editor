@@ -3,6 +3,7 @@
 //! held until Enter or until the row is left, like a field.
 
 use cuelight_editor_core::lists::List;
+use cuelight_editor_core::renames::Kind;
 use iced::widget::Widget as _;
 use iced::widget::{Column, container, row, text, text_input};
 use iced::{Element, Fill, Task};
@@ -110,9 +111,26 @@ impl App {
                 .find(|(name, _)| name == was)
                 .map(|(_, value)| value)
         });
-        let Some(name) = draft.name.clone().or_else(|| was.clone()) else {
+        let Some(mut name) = draft.name.clone().or_else(|| was.clone()) else {
             return Task::none();
         };
+        // A variable given a new name is renamed wherever it is used,
+        // which is asked about first; a value typed with it is written
+        // under the name it has.
+        let mut renamed_to = None;
+        if list == List::Variables
+            && let Some(was) = &was
+            && name.trim() != was
+        {
+            let to = name.trim().to_owned();
+            if draft.value.is_none() {
+                self.list_typed.remove(&at);
+                self.propose_rename(Kind::Variable, was, &to);
+                return Task::none();
+            }
+            renamed_to = Some(to);
+            name.clone_from(was);
+        }
         let Some(typed) = draft.value.clone().or(current) else {
             return Task::none();
         };
@@ -139,6 +157,9 @@ impl App {
                     list.heading().to_lowercase(),
                     name.trim()
                 );
+                if let Some(to) = renamed_to {
+                    self.propose_rename(Kind::Variable, &name, &to);
+                }
             }
             Err(error) => {
                 if let Some(document) = &mut self.document {

@@ -15,6 +15,7 @@ pub mod lists;
 pub mod log;
 pub mod opened;
 pub mod placement;
+pub mod renames;
 pub mod save;
 pub mod scenes;
 pub mod session;

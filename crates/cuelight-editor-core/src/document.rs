@@ -15,6 +15,7 @@
 //! sets `x` sixty times a second is one step with the first `before`
 //! and the last `after`.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde_json::Value;
@@ -173,6 +174,13 @@ pub enum Edit {
         item: Item,
         shifted: Option<String>,
     },
+    /// Another of the show's text files, `name`, given new text: the
+    /// driver, when a rename goes through it too.
+    File {
+        name: String,
+        before: String,
+        after: String,
+    },
 }
 
 impl Edit {
@@ -210,12 +218,25 @@ impl Edit {
                 item,
                 shifted,
             },
+            Edit::File {
+                name,
+                before,
+                after,
+            } => Edit::File {
+                name,
+                before: after,
+                after: before,
+            },
         }
     }
 
-    pub fn path(&self) -> &Pointer {
+    /// Where in the document; `None` for an edit of another file.
+    pub fn path(&self) -> Option<&Pointer> {
         match self {
-            Edit::Set { path, .. } | Edit::Insert { path, .. } | Edit::Remove { path, .. } => path,
+            Edit::Set { path, .. } | Edit::Insert { path, .. } | Edit::Remove { path, .. } => {
+                Some(path)
+            }
+            Edit::File { .. } => None,
         }
     }
 }
@@ -233,6 +254,9 @@ pub struct Document {
     head: String,
     root: Node,
     foot: String,
+    /// The show's other text files as edited along with it, by their
+    /// path in the show; a file no edit touched is not here.
+    files: BTreeMap<String, String>,
     undo: Vec<Step>,
     redo: Vec<Step>,
     /// How far down the undo stack the saved state lies, or `None` when
@@ -241,9 +265,10 @@ pub struct Document {
     /// How many `begin_step` calls are open; while any is, edits join
     /// the step on top of the undo stack.
     open: usize,
-    /// The text when the outermost open step began: a step that ends
-    /// where it began changed nothing, and is not kept.
-    began: Option<String>,
+    /// The text, and the other files, when the outermost open step
+    /// began: a step that ends where it began changed nothing, and is
+    /// not kept.
+    began: Option<(String, BTreeMap<String, String>)>,
     /// Counts every change to the tree: a copy of the text kept
     /// elsewhere is stale when this moved on.
     revision: u64,
@@ -263,6 +288,7 @@ impl Document {
             head,
             root,
             foot,
+            files: BTreeMap::new(),
             undo: Vec::new(),
             redo: Vec::new(),
             saved: Some(0),
@@ -373,7 +399,7 @@ impl Document {
         if self.open == 0 {
             self.redo.clear();
             self.undo.push(Step::default());
-            self.began = Some(self.text());
+            self.began = Some((self.text(), self.files.clone()));
         }
         self.open += 1;
     }
@@ -388,7 +414,7 @@ impl Document {
         let began = self.began.take();
         if self.undo.last().is_some_and(|step| step.edits.is_empty()) {
             self.undo.pop();
-        } else if began.is_some_and(|text| text == self.text()) {
+        } else if began.is_some_and(|(text, files)| text == self.text() && files == self.files) {
             // A drag that came back to where it started: take its edits
             // back and keep nothing to undo or redo.
             if self.undo() {
@@ -625,6 +651,34 @@ impl Document {
         String::new()
     }
 
+    /// Another of the show's text files as the edits left it; `None`
+    /// when none touched it.
+    pub fn file(&self, name: &str) -> Option<&str> {
+        self.files.get(name).map(String::as_str)
+    }
+
+    /// Every other file the edits touched, with its text now.
+    pub fn files(&self) -> &BTreeMap<String, String> {
+        &self.files
+    }
+
+    /// Give another of the show's text files new text, as an edit that
+    /// undoes like any other. `shipped` is its text as the show came,
+    /// for the first edit of it.
+    pub fn set_file(&mut self, name: &str, shipped: &str, text: String) {
+        let before = self
+            .files
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| shipped.to_owned());
+        self.files.insert(name.to_owned(), text.clone());
+        self.record(Edit::File {
+            name: name.to_owned(),
+            before,
+            after: text,
+        });
+    }
+
     /// Replace the whole document with `text`, as one step: undoing it
     /// gives back the text it replaced. The blank space around the root
     /// stays as it was.
@@ -743,6 +797,9 @@ impl Document {
                 {
                     container.take(*index);
                 }
+            }
+            Edit::File { name, after, .. } => {
+                self.files.insert(name.clone(), after.clone());
             }
         }
     }

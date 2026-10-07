@@ -121,19 +121,12 @@ impl App {
     /// The question a change on disk asks while there are unsaved edits.
     pub(super) fn outside_prompt(&self) -> Option<Element<'_, Message>> {
         self.outside.as_ref()?;
-        Some(
-            container(
-                row![
-                    text("The show changed on disk, and you have unsaved edits.").size(13),
-                    button("Keep my edits").on_press(Message::KeepEdits),
-                    button("Load from disk").on_press(Message::LoadFromDisk),
-                ]
-                .spacing(8)
-                .align_y(iced::Center),
-            )
-            .padding([4, 8])
-            .width(Fill)
-            .boxed(),
-        )
+        Some(super::question(
+            "The show changed on disk, and you have unsaved edits.".to_owned(),
+            [
+                ("Keep my edits", Message::KeepEdits),
+                ("Load from disk", Message::LoadFromDisk),
+            ],
+        ))
     }
 }

@@ -185,35 +185,13 @@ impl App {
         } else {
             format!("This show has unsaved edits from {ago}.")
         };
-        // In the theme's warning colour, faint behind the words and full
-        // round them: it asks for a decision without shouting over the
-        // stage, on a light theme or a dark one.
-        let bar = container(
-            row![
-                text(said).size(13).width(Fill),
-                button(text("Restore").size(13)).on_press(Message::RestoreEdits),
-                button(text("Discard").size(13))
-                    .on_press(Message::DiscardEdits)
-                    .style(button::secondary),
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
-        )
-        .padding([6, 10])
-        .width(Fill)
-        .style(|theme: &Theme| {
-            let warning = theme.palette().warning.base.color;
-            container::Style {
-                background: Some(iced::Background::Color(warning.scale_alpha(0.18))),
-                border: iced::Border {
-                    color: warning,
-                    width: 1.0,
-                    radius: 4.0.into(),
-                },
-                ..container::Style::default()
-            }
-        });
-        Some(container(bar).padding([4, 8]).width(Fill).boxed())
+        Some(super::question(
+            said,
+            [
+                ("Restore", Message::RestoreEdits),
+                ("Discard", Message::DiscardEdits),
+            ],
+        ))
     }
 }
 

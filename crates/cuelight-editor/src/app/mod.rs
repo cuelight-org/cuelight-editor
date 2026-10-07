@@ -214,6 +214,9 @@ pub struct App {
     /// Light or dark as picked in the top bar, over the system's
     /// preference; `None` follows the system.
     theme_pick: Option<iced::theme::Mode>,
+    /// The window was asked to close with unsaved edits: what to do with
+    /// them waits for an answer.
+    closing: bool,
 }
 
 /// An area of the window.
@@ -440,6 +443,12 @@ pub enum Message {
     RemoveStyle,
     /// Light or dark picked in the top bar, or back to the system's.
     PickTheme(Option<iced::theme::Mode>),
+    /// The window's close button, or the system asking it to close.
+    CloseRequested,
+    /// The answers to closing with unsaved edits.
+    SaveAndClose,
+    CloseWithoutSaving,
+    KeepOpen,
     /// The window as drawn, for `--screenshot`.
     #[cfg(not(target_arch = "wasm32"))]
     Shot(iced::window::Screenshot),
@@ -512,6 +521,7 @@ impl App {
             list_typed: BTreeMap::new(),
             mode: iced::theme::Mode::None,
             theme_pick: None,
+            closing: false,
             fitted: Cell::new(1.0),
             log_open: true,
             follow_scene: false,
@@ -622,6 +632,7 @@ impl App {
             | Message::RemoveListRow(..)
             | Message::PickStyle(_)
             | Message::Select(_)
+            | Message::CloseRequested
             | Message::Reset(_)
             | Message::ResetField(_) => self.commit_typed(None),
             _ => {}
@@ -1021,6 +1032,30 @@ impl App {
                 self.unfolded_field = label;
                 Task::none()
             }
+            Message::CloseRequested => {
+                if self.document.as_ref().is_some_and(Document::is_dirty) {
+                    self.closing = true;
+                    Task::none()
+                } else {
+                    iced::exit()
+                }
+            }
+            Message::SaveAndClose => {
+                let task = self.save();
+                if self.document.as_ref().is_some_and(Document::is_dirty) {
+                    // Not saved: the status says why, and the window stays.
+                    self.closing = false;
+                    task
+                } else {
+                    iced::exit()
+                }
+            }
+            // The journal keeps the edits: the next open offers them back.
+            Message::CloseWithoutSaving => iced::exit(),
+            Message::KeepOpen => {
+                self.closing = false;
+                Task::none()
+            }
             Message::PickTheme(pick) => {
                 self.theme_pick = pick;
                 Task::none()
@@ -1174,7 +1209,11 @@ impl App {
             }
             _ => None,
         });
-        let mut subscriptions = vec![keys, iced::system::theme_changes().map(Message::Mode)];
+        let mut subscriptions = vec![
+            keys,
+            iced::system::theme_changes().map(Message::Mode),
+            iced::window::close_requests().map(|_| Message::CloseRequested),
+        ];
         #[cfg(not(target_arch = "wasm32"))]
         let waiting_to_shoot = self.session.is_some() && self.screenshot.is_some();
         #[cfg(target_arch = "wasm32")]
@@ -1402,8 +1441,20 @@ impl App {
         let asking: Option<Element<'_, Message>> = None;
         // So does a journal with edits the show was not saved with.
         let restore = self.restore_prompt();
+        // And closing with unsaved edits.
+        let closing = self.closing.then(|| {
+            question(
+                "The show has unsaved edits.".to_owned(),
+                [
+                    ("Save", Message::SaveAndClose),
+                    ("Don't save", Message::CloseWithoutSaving),
+                    ("Cancel", Message::KeepOpen),
+                ],
+            )
+        });
         column![
             container(bar).padding(8).width(Fill),
+            closing,
             asking,
             restore,
             body,
@@ -1411,6 +1462,43 @@ impl App {
         ]
         .boxed()
     }
+}
+
+/// A question the editor waits on, in a bar under the toolbar: what it
+/// asks, then its answers, the first the one it suggests. In the
+/// theme's warning colour, faint behind the words and full round them:
+/// it asks for a decision without shouting over the stage, on a light
+/// theme or a dark one.
+fn question<'a, const N: usize>(
+    said: String,
+    answers: [(&'a str, Message); N],
+) -> Element<'a, Message> {
+    let mut line = row![text(said).size(13).width(Fill)]
+        .spacing(8)
+        .align_y(iced::Center);
+    for (i, (label, message)) in answers.into_iter().enumerate() {
+        let mut answer = button(text(label).size(13)).on_press(message);
+        if i > 0 {
+            answer = answer.style(button::secondary);
+        }
+        line = line.push(answer.boxed());
+    }
+    let bar = container(line)
+        .padding([6, 10])
+        .width(Fill)
+        .style(|theme: &Theme| {
+            let warning = theme.palette().warning.base.color;
+            container::Style {
+                background: Some(iced::Background::Color(warning.scale_alpha(0.18))),
+                border: iced::Border {
+                    color: warning,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..container::Style::default()
+            }
+        });
+    container(bar).padding([4, 8]).width(Fill).boxed()
 }
 
 /// The window's pixels as a PNG.

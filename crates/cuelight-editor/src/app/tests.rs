@@ -1771,3 +1771,33 @@ fn a_font_style_is_picked_under_its_font_and_set_like_a_layer() {
     assert!(style(&app, "tiny_2").is_null());
     assert_eq!(app.style, None);
 }
+
+#[test]
+fn closing_with_unsaved_edits_asks_first() {
+    let (mut app, dir) = open_copy();
+    // Nothing unsaved: nothing to ask.
+    let _ = app.update(Message::CloseRequested);
+    assert!(!app.closing);
+
+    let _ = app.update(Message::PutField("background", "#102030".into()));
+    assert!(app.document.as_ref().unwrap().is_dirty());
+    let _ = app.update(Message::CloseRequested);
+    assert!(app.closing);
+    {
+        let mut ui = simulator(app.view());
+        assert!(ui.find("The show has unsaved edits.").is_ok());
+        assert!(ui.find("Don't save").is_ok());
+    }
+    let _ = app.update(Message::KeepOpen);
+    assert!(!app.closing, "cancel keeps the window and the edits");
+    assert!(app.document.as_ref().unwrap().is_dirty());
+
+    let _ = app.update(Message::CloseRequested);
+    let _ = app.update(Message::SaveAndClose);
+    assert!(
+        !app.document.as_ref().unwrap().is_dirty(),
+        "saved on the way out"
+    );
+    let saved = std::fs::read_to_string(dir.path().join("show.json")).unwrap();
+    assert!(saved.contains("#102030"));
+}

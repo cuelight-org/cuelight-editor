@@ -34,6 +34,7 @@ mod editing;
 mod inputs_panel;
 mod inspector;
 mod library;
+mod lists;
 mod sound;
 mod stage;
 #[cfg(not(target_arch = "wasm32"))]
@@ -190,6 +191,8 @@ pub struct App {
     layer_fields: Vec<editing::LayerField>,
     /// What was typed into those rows.
     field_typed: Option<TypedFields>,
+    /// What was typed into the rows of the show's lists.
+    list_typed: BTreeMap<lists::Row, lists::Draft>,
     /// A number being dragged by its label.
     scrub: Option<editing::Scrub>,
     /// Whether the system asks for a light or a dark theme: iced draws
@@ -385,6 +388,13 @@ pub enum Message {
     Expand(Option<Property>),
     /// A colour field's channels unfolded, or folded with `None`.
     UnfoldField(Option<&'static str>),
+    /// A name or a value typed into a row of one of the show's lists,
+    /// by the name the row had (`None` for the row that adds one).
+    TypeListName(cuelight_editor_core::lists::List, Option<String>, String),
+    TypeListValue(cuelight_editor_core::lists::List, Option<String>, String),
+    /// Enter in a list's row.
+    ApplyList(cuelight_editor_core::lists::List, Option<String>),
+    RemoveListRow(cuelight_editor_core::lists::List, String),
     /// The log below the stage folded to its header, or unfolded.
     ToggleLog,
     /// A split between two areas dragged.
@@ -456,6 +466,7 @@ impl App {
             scrub: None,
             layer_fields: Vec::new(),
             field_typed: None,
+            list_typed: BTreeMap::new(),
             mode: iced::theme::Mode::None,
             fitted: Cell::new(1.0),
             log_open: true,
@@ -552,6 +563,9 @@ impl App {
                 self.commit_typed(Some(editing::Typed::Property(*property)))
             }
             Message::TypeField(label, _) => self.commit_typed(Some(editing::Typed::Field(label))),
+            Message::TypeListName(list, was, _) | Message::TypeListValue(list, was, _) => {
+                self.commit_typed(Some(editing::Typed::Row(*list, was.clone())))
+            }
             Message::Choose(_)
             | Message::Pick(..)
             | Message::Deselect
@@ -559,6 +573,7 @@ impl App {
             | Message::ScrubStart(_)
             | Message::Put(..)
             | Message::PutField(..)
+            | Message::RemoveListRow(..)
             | Message::Reset(_)
             | Message::ResetField(_) => self.commit_typed(None),
             _ => {}
@@ -597,6 +612,16 @@ impl App {
                 Task::none()
             }
             Message::ApplyField(label) => self.apply_field(label),
+            Message::TypeListName(list, was, name) => {
+                self.type_list((list, was), Some(name), None);
+                Task::none()
+            }
+            Message::TypeListValue(list, was, value) => {
+                self.type_list((list, was), None, Some(value));
+                Task::none()
+            }
+            Message::ApplyList(list, was) => self.apply_list((list, was)),
+            Message::RemoveListRow(list, name) => self.remove_list_row(list, name),
             Message::PutField(label, value) => self.put_field(label, value),
             Message::EditOwned => self.edit_owned(),
             Message::KeepOwned => {
@@ -1022,6 +1047,7 @@ impl App {
                 self.owned = None;
                 self.scrub = None;
                 self.field_typed = None;
+                self.list_typed.clear();
                 self.inputs = engine.show().map(Inputs::of).unwrap_or_default();
                 self.edits.clear();
                 let task = self.listen(&sounds, sound_files);

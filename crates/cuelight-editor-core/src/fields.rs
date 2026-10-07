@@ -16,12 +16,16 @@ pub enum Input {
     Choice(&'static [&'static str]),
     Toggle,
     Number,
+    /// A number from 0 to 1: a share of something.
+    Share,
     /// A whole number.
     Count,
     /// Two numbers, typed `40, 30`.
     Pair,
     /// `#RRGGBB` or `#RRGGBBAA`.
     Colour,
+    /// `#RRGGBB`: a colour the format takes without alpha.
+    Opaque,
     Text,
     /// The name of one of the show's images or vector artwork.
     Artwork,
@@ -33,7 +37,8 @@ pub enum Input {
 pub struct Field {
     /// Its name in the inspector.
     pub label: &'static str,
-    /// The keys down to it from the layer's object: `["stroke", "width"]`.
+    /// The keys down to it from the layer's object: `["stroke", "width"]`;
+    /// a number steps into a list (`["passes", "0", "dots"]`).
     pub path: &'static [&'static str],
     pub input: Input,
     pub kinds: &'static [&'static str],
@@ -278,7 +283,7 @@ pub const SHOW_FIELDS: &[Field] = &[
         &["output", "mode"],
         Input::Choice(&["rgb", "gray2", "gray4"]),
     ),
-    show_field("tint", &["output", "tint"], Input::Colour),
+    show_field("tint", &["output", "tint"], Input::Opaque),
     show_field(
         "scaling",
         &["output", "scaling"],
@@ -289,6 +294,33 @@ pub const SHOW_FIELDS: &[Field] = &[
         &["output", "edges"],
         Input::Choice(&["soft", "hard"]),
     ),
+    // The dot matrix pass: setting any of these shows the frame as dots,
+    // taking them all out shows it plain.
+    show_field(
+        "dot size",
+        &["output", "passes", "0", "dots", "size"],
+        Input::Share,
+    ),
+    show_field(
+        "dot shape",
+        &["output", "passes", "0", "dots", "shape"],
+        Input::Choice(&["round", "square"]),
+    ),
+    show_field(
+        "unlit",
+        &["output", "passes", "0", "dots", "unlit"],
+        Input::Opaque,
+    ),
+    show_field(
+        "glow",
+        &["output", "passes", "0", "dots", "glow"],
+        Input::Share,
+    ),
+    show_field("press", &["input", "press"], Input::Text),
+    show_field("pointer x", &["input", "pointer", "x"], Input::Text),
+    show_field("pointer y", &["input", "pointer", "y"], Input::Text),
+    show_field("pointer over", &["input", "pointer", "over"], Input::Text),
+    show_field("pointer under", &["input", "pointer", "under"], Input::Text),
 ];
 
 const fn show_field(label: &'static str, path: &'static [&'static str], input: Input) -> Field {
@@ -307,12 +339,11 @@ const fn show_field(label: &'static str, path: &'static [&'static str], input: I
 pub const SHOW_ELSEWHERE: &[(&str, &str)] = &[
     ("format", "fixed by the engine the show is written for"),
     ("fonts", "the font styles"),
-    ("variables", "the inputs"),
-    ("values", "the inputs"),
-    ("input", "the inputs"),
+    ("values", "the binding card (M4)"),
     ("layers", "the layers list (item 24)"),
     ("scenes", "the layers list (item 24)"),
-    ("passes", "its own editor, not planned yet"),
+    ("variables", "the show's lists"),
+    ("keys", "the show's lists"),
 ];
 
 pub const ELSEWHERE: &[(&str, &str)] = &[
@@ -356,8 +387,19 @@ pub fn read<'a>(layer: &'a Value, field: &Field) -> Option<&'a Value> {
     field
         .path
         .iter()
-        .try_fold(layer, |node, key| node.get(key))
+        .try_fold(layer, |node, key| match key.parse::<usize>() {
+            Ok(i) => node.get(i),
+            Err(_) => node.get(key),
+        })
         .filter(|value| !value.is_null())
+}
+
+/// One key of a field's path as a pointer's step: a number steps into a
+/// list.
+fn step(key: &str) -> Part {
+    key.parse()
+        .map(Part::Index)
+        .unwrap_or_else(|_| Part::Key(key.to_owned()))
 }
 
 /// A field's value as its row shows it: a pair as `40, 30`, a colour
@@ -370,7 +412,7 @@ pub fn show(field: &Field, value: &Value) -> Option<String> {
             _ => None,
         },
         (Input::Toggle, Value::Bool(b)) => Some(b.to_string()),
-        (Input::Number | Input::Count, Value::Number(n)) => Some(n.to_string()),
+        (Input::Number | Input::Share | Input::Count, Value::Number(n)) => Some(n.to_string()),
         (_, Value::String(s)) => Some(s.clone()),
         _ => None,
     }
@@ -404,6 +446,10 @@ pub fn parse(field: &Field, typed: &str) -> Result<Value, String> {
             _ => Err(format!("{typed:?} is not true or false")),
         },
         Input::Number => number(typed),
+        Input::Share => number(typed).and_then(|n| match n.as_f64() {
+            Some(share) if (0.0..=1.0).contains(&share) => Ok(n),
+            _ => Err(format!("{typed:?} is not from 0 to 1")),
+        }),
         Input::Count => typed
             .parse::<u64>()
             .map(Value::from)
@@ -420,6 +466,13 @@ pub fn parse(field: &Field, typed: &str) -> Result<Value, String> {
             {
                 Value::String(s) if !s.is_empty() => Ok(Value::String(s)),
                 _ => Err("a colour is needed: #RRGGBB or #RRGGBBAA".to_owned()),
+            })
+        }
+        Input::Opaque => {
+            crate::edit::parse(cuelight_core::Property::Tint, typed).and_then(|colour| match colour
+            {
+                Value::String(s) if s.len() == 7 => Ok(Value::String(s)),
+                _ => Err("a colour without alpha is needed: #RRGGBB".to_owned()),
             })
         }
         Input::Text | Input::Artwork => {
@@ -441,9 +494,7 @@ pub fn set(
     field: &Field,
     value: Value,
 ) -> Result<(), EditError> {
-    let at = field.path.iter().fold(layer.clone(), |at, key| {
-        at.then(Part::Key((*key).to_owned()))
-    });
+    let at = path_of(layer, field);
     if document.get(&at).is_some() {
         return document.set(&at, value);
     }
@@ -451,10 +502,13 @@ pub fn set(
     // rest of the path built round the value.
     let mut parent = layer.clone();
     for (depth, key) in field.path.iter().enumerate() {
-        let next = parent.then(Part::Key((*key).to_owned()));
+        let next = parent.then(step(key));
         if document.get(&next).is_none() {
             let rest = field.path.get(depth + 1..).unwrap_or_default();
             let mut built = rest.iter().rev().fold(value, |inner, key| {
+                if key.parse::<usize>().is_ok() {
+                    return Value::Array(vec![inner]);
+                }
                 let mut object = serde_json::Map::new();
                 object.insert((*key).to_owned(), inner);
                 Value::Object(object)
@@ -537,23 +591,53 @@ pub fn written(document: &Document, layer: &Pointer, field: &Field) -> bool {
 }
 
 /// Take `field` out of the layer at `layer`, back to its default, and
-/// the object it sits in with it when that object needs it.
+/// the object it sits in with it when that object needs it. What that
+/// leaves empty (an `input` with nothing in it) goes too.
 pub fn unset(document: &mut Document, layer: &Pointer, field: &Field) -> Result<(), EditError> {
     let keys = match field.path.split_last() {
         Some((_, parent)) if field.needed && !parent.is_empty() => parent,
         _ => field.path,
     };
-    let at = keys.iter().fold(layer.clone(), |at, key| {
-        at.then(Part::Key((*key).to_owned()))
-    });
-    document.remove(&at)
+    remove_path(document, layer, keys)
+}
+
+/// Take out what `keys` reach from `owner`, and then each object or list
+/// above it that it leaves empty, up to `owner` itself.
+pub fn remove_path(
+    document: &mut Document,
+    owner: &Pointer,
+    keys: &[&str],
+) -> Result<(), EditError> {
+    let at = keys
+        .iter()
+        .fold(owner.clone(), |at, key| at.then(step(key)));
+    document.remove(&at)?;
+    for depth in (1..keys.len()).rev() {
+        let parent = keys
+            .iter()
+            .take(depth)
+            .fold(owner.clone(), |at, key| at.then(step(key)));
+        let empty = document
+            .get(&parent)
+            .is_some_and(|node| match node.value() {
+                Value::Object(object) => object.is_empty(),
+                Value::Array(items) => items.is_empty(),
+                _ => false,
+            });
+        if !empty {
+            break;
+        }
+        document.remove(&parent)?;
+    }
+    Ok(())
 }
 
 /// Where the layer at `layer` writes `field`.
 fn path_of(layer: &Pointer, field: &Field) -> Pointer {
-    field.path.iter().fold(layer.clone(), |at, key| {
-        at.then(Part::Key((*key).to_owned()))
-    })
+    field
+        .path
+        .iter()
+        .fold(layer.clone(), |at, key| at.then(step(key)))
 }
 
 #[cfg(test)]
@@ -575,6 +659,13 @@ mod tests {
         assert_eq!(parse(field("voices"), "3"), Ok(json!(3)));
         assert!(parse(field("voices"), "2.5").is_err());
         assert_eq!(parse(field("fill"), "#00ff00"), Ok(json!("#00FF00")));
+        let glow = SHOW_FIELDS.iter().find(|f| f.label == "glow").unwrap();
+        assert_eq!(parse(glow, "0.3"), Ok(json!(0.3)));
+        assert!(parse(glow, "1.5").is_err(), "a share is at most 1");
+        assert!(parse(glow, "-0.1").is_err());
+        let unlit = SHOW_FIELDS.iter().find(|f| f.label == "unlit").unwrap();
+        assert_eq!(parse(unlit, "#1a0904"), Ok(json!("#1A0904")));
+        assert!(parse(unlit, "#1A090480").is_err(), "unlit has no alpha");
         assert!(parse(field("fill"), "").is_err());
     }
 

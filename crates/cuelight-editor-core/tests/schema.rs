@@ -127,9 +127,10 @@ fn value(input: Input) -> Value {
         Input::Choice(words) => json!(words.last().unwrap()),
         Input::Toggle => json!(true),
         Input::Number => json!(2.5),
+        Input::Share => json!(0.5),
         Input::Count => json!(2),
         Input::Pair => json!([12, 8]),
-        Input::Colour => json!("#FF0000"),
+        Input::Colour | Input::Opaque => json!("#FF0000"),
         Input::Text => json!("go"),
         Input::Artwork => json!("art"),
     }
@@ -199,40 +200,76 @@ fn every_field_set_is_what_the_engine_reads() {
     assert!(checked > 30, "only {checked} checked");
 }
 
-#[test]
-fn every_show_key_is_a_setting_or_left_to_a_named_part() {
-    let schema = serde_json::to_value(schemars::schema_for!(cuelight_core::Show)).unwrap();
-    let defs = &schema["$defs"];
-    let keys = |node: &Value| -> Vec<String> {
-        resolve(defs, node)["properties"]
-            .as_object()
-            .map(|p| p.keys().cloned().collect())
-            .unwrap_or_default()
-    };
-    let output = schema["properties"]["output"]
-        .get("$ref")
-        .map(|_| schema["properties"]["output"].clone())
-        .or_else(|| schema["properties"]["output"]["allOf"].get(0).cloned())
-        .unwrap();
-    assert!(keys(&output).len() >= 5, "the output's keys are read");
-    let settings: BTreeSet<Vec<&str>> = fields::SHOW_FIELDS
+/// A schema node with its `$ref`s followed and an optional one's `null`
+/// taken away.
+fn plain(defs: &Value, node: &Value) -> Value {
+    let mut node = resolve(defs, node);
+    loop {
+        let inner = node["allOf"]
+            .get(0)
+            .or_else(|| {
+                node["anyOf"]
+                    .as_array()
+                    .and_then(|any| any.iter().find(|n| n["type"] != "null"))
+            })
+            .cloned();
+        match inner {
+            Some(inner) => node = resolve(defs, &inner),
+            None => return node,
+        }
+    }
+}
+
+/// Every key under `node` at `prefix` that no setting reaches and no
+/// part is named for; an object a setting reaches into is walked too.
+fn unedited(defs: &Value, node: &Value, prefix: &[String], missing: &mut Vec<String>) {
+    let settings: Vec<Vec<&str>> = fields::SHOW_FIELDS
         .iter()
         .map(|f| f.path.to_vec())
         .collect();
     let elsewhere: BTreeSet<&str> = fields::SHOW_ELSEWHERE.iter().map(|(key, _)| *key).collect();
+    let node = plain(defs, node);
+    let Some(properties) = node["properties"].as_object() else {
+        return;
+    };
+    for (key, child) in properties {
+        let mut path = prefix.to_vec();
+        path.push(key.clone());
+        let exact = settings.iter().any(|s| *s == path);
+        let inside = settings
+            .iter()
+            .any(|s| s.len() > path.len() && s[..path.len()] == path[..]);
+        if exact || elsewhere.contains(key.as_str()) {
+            continue;
+        }
+        if !inside {
+            missing.push(path.join("."));
+        } else if plain(defs, child)["type"] == "object" {
+            unedited(defs, child, &path, missing);
+        }
+    }
+}
+
+#[test]
+fn every_show_key_is_a_setting_or_left_to_a_named_part() {
+    let schema = serde_json::to_value(schemars::schema_for!(cuelight_core::Show)).unwrap();
+    let defs = &schema["$defs"];
     let mut missing = Vec::new();
-    for key in keys(&schema) {
-        let set = settings.iter().any(|path| path[0] == key);
-        if !(set || elsewhere.contains(key.as_str())) {
-            missing.push(key);
-        }
-    }
-    for key in keys(&output) {
-        if !(settings.contains(&vec!["output", key.as_str()]) || elsewhere.contains(key.as_str())) {
-            missing.push(format!("output.{key}"));
-        }
-    }
+    unedited(defs, &schema, &[], &mut missing);
     assert!(missing.is_empty(), "show keys nobody edits: {missing:?}");
+    // The walk reaches into the output and the input.
+    let output = plain(defs, &schema["properties"]["output"]);
+    let input = plain(defs, &schema["properties"]["input"]);
+    assert!(
+        output["properties"]
+            .as_object()
+            .is_some_and(|p| p.len() >= 5)
+    );
+    assert!(
+        input["properties"]
+            .as_object()
+            .is_some_and(|p| p.len() >= 3)
+    );
 }
 
 #[test]

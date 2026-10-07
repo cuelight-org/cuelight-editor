@@ -8,12 +8,13 @@ use cuelight_editor_core::document::Pointer;
 use cuelight_editor_core::edit;
 use cuelight_editor_core::fields;
 
-/// A field typed into: one of the picked layer's properties, or one of
-/// its other fields by label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A field typed into: one of the picked layer's properties, one of
+/// its other fields by label, or a row of one of the show's lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Typed {
     Property(Property),
     Field(&'static str),
+    Row(cuelight_editor_core::lists::List, Option<String>),
 }
 
 /// A field of the picked layer as its row shows it.
@@ -210,6 +211,7 @@ impl App {
             }
             let _ = self.apply_field(label);
         }
+        self.commit_lists(keep.as_ref());
     }
 
     /// Whether anything typed is waiting to be applied, for the picked
@@ -222,6 +224,7 @@ impl App {
             || self.field_typed.as_ref().is_some_and(|(path, typed)| {
                 self.selection.last() == path.as_ref() && !typed.is_empty()
             })
+            || (self.selection.is_empty() && !self.list_typed.is_empty())
     }
 
     /// Why what is typed into a property's field does not read, if it

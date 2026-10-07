@@ -149,7 +149,7 @@ fn check_format(document: &Document) -> Result<(), SaveError> {
 /// Write a file whole or not at all: into a file beside it first, then
 /// moved over it, so a crash mid-write leaves the old file standing.
 #[cfg(not(target_arch = "wasm32"))]
-fn write(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
+pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
     let error = |e: std::io::Error| SaveError::Write(format!("{}: {e}", path.display()));
     let name = path
         .file_name()

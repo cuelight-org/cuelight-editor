@@ -244,6 +244,9 @@ pub struct Document {
     /// The text when the outermost open step began: a step that ends
     /// where it began changed nothing, and is not kept.
     began: Option<String>,
+    /// Counts every change to the tree: a copy of the text kept
+    /// elsewhere is stale when this moved on.
+    revision: u64,
 }
 
 impl Document {
@@ -265,6 +268,7 @@ impl Document {
             saved: Some(0),
             open: 0,
             began: None,
+            revision: 0,
         })
     }
 
@@ -350,6 +354,7 @@ impl Document {
             && *same == *path
         {
             *last = after;
+            self.revision += 1;
             return Ok(());
         }
         self.record(Edit::Set {
@@ -454,7 +459,22 @@ impl Document {
         Ok(())
     }
 
+    /// Replace the whole document with `text`, as one step: undoing it
+    /// gives back the text it replaced. The blank space around the root
+    /// stays as it was.
+    pub fn replace(&mut self, text: &str) -> Result<(), ParseError> {
+        let other = Document::parse(text)?;
+        let before = std::mem::replace(&mut self.root, other.root.clone());
+        self.record(Edit::Set {
+            path: Pointer(Vec::new()),
+            before,
+            after: other.root,
+        });
+        Ok(())
+    }
+
     fn record(&mut self, edit: Edit) {
+        self.revision += 1;
         if self.open > 0
             && let Some(step) = self.undo.last_mut()
         {
@@ -480,6 +500,7 @@ impl Document {
         for edit in step.edits.iter().rev() {
             self.apply(&edit.clone().inverse());
         }
+        self.revision += 1;
         self.redo.push(step);
         true
     }
@@ -496,6 +517,7 @@ impl Document {
         for edit in &step.edits {
             self.apply(edit);
         }
+        self.revision += 1;
         self.undo.push(step);
         true
     }
@@ -511,6 +533,11 @@ impl Document {
     /// The steps that can be undone, oldest first.
     pub fn steps(&self) -> &[Step] {
         &self.undo
+    }
+
+    /// How many times the text changed since the document was read.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Whether the document differs from what was last saved.
@@ -1065,6 +1092,38 @@ mod tests {
         assert!(!doc.is_dirty());
         assert!(doc.redo());
         assert_eq!(doc.text(), SHOW.replace(r#""x": 1.0"#, r#""x": 7"#));
+    }
+
+    #[test]
+    fn a_replaced_text_is_one_step_to_undo() {
+        let mut doc = Document::parse(SHOW).unwrap();
+        let other = SHOW.replace(r#""name": "t""#, r#""name": "u""#);
+        doc.replace(&other).unwrap();
+        assert_eq!(doc.text(), other);
+        assert!(doc.is_dirty());
+        assert!(doc.undo());
+        assert_eq!(doc.text(), SHOW);
+        assert!(!doc.can_undo(), "one step");
+        assert!(doc.replace("{").is_err());
+        assert_eq!(doc.text(), SHOW, "text that does not read changes nothing");
+    }
+
+    #[test]
+    fn every_change_moves_the_revision() {
+        let mut doc = Document::parse(SHOW).unwrap();
+        let x = Pointer::parse("/layers/0/x").unwrap();
+        let mut seen = vec![doc.revision()];
+        doc.begin_step();
+        doc.set(&x, json!(5)).unwrap();
+        seen.push(doc.revision());
+        doc.set(&x, json!(6)).unwrap();
+        seen.push(doc.revision());
+        doc.end_step();
+        doc.undo();
+        seen.push(doc.revision());
+        doc.redo();
+        seen.push(doc.revision());
+        assert!(seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
     }
 
     #[test]

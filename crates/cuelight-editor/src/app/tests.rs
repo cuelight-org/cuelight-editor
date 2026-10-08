@@ -296,6 +296,37 @@ fn the_watch_reports_a_file_written_in_the_folder() {
     assert!(paths.iter().any(|p| p.ends_with("show.json")), "{paths:?}");
 }
 
+#[test]
+fn the_watch_does_not_report_a_file_only_read() {
+    use iced::futures::StreamExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("show.json");
+    std::fs::write(&path, "{}").unwrap();
+    let mut changes = Box::pin(crate::watcher::watch(&(dir.path().to_owned(), true)));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while let Some(paths) = iced::futures::executor::block_on(changes.next()) {
+            if sender.send(paths).is_err() {
+                break;
+            }
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Reading it, as the editor does to compare, is no change.
+    let _ = std::fs::read(&path).unwrap();
+    assert!(
+        receiver
+            .recv_timeout(std::time::Duration::from_millis(600))
+            .is_err()
+    );
+    std::fs::write(&path, "{\"a\": 1}").unwrap();
+    assert!(
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok()
+    );
+}
+
 /// The base value the engine has for a property of the layer at `path`.
 fn base(app: &App, path: &LayerPath, property: Property) -> Option<Value> {
     let session = app.session.as_ref()?;
@@ -1336,6 +1367,31 @@ const NO_SNAP: Held = Held {
     shift: false,
     ctrl: true,
 };
+
+#[test]
+fn a_drag_writes_a_few_times_a_second_and_its_json_follows_on_letting_go() {
+    let (mut app, _dir) = open_copy();
+    let group = LayerPath::new(cuelight_core::Root::Show, [1]);
+    let _ = app.update(Message::Choose(group.clone()));
+    let _ = app.update(Message::Grab(Grip::Move, [32.0, 14.0]));
+    let _ = simulator(app.view());
+    let _ = app.update(Message::Drag([35.0, 16.0], NO_SNAP));
+    let _ = app.update(Message::DragApply);
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(35.0)));
+    // A frame right after the last write waits.
+    let _ = app.update(Message::Drag([40.0, 16.0], NO_SNAP));
+    let _ = app.update(Message::DragApply);
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(35.0)));
+    // The JSON stays as the drag began while it is on.
+    let _ = simulator(app.view());
+    let held = app.held_json.borrow().clone().unwrap_or_default();
+    assert!(held.contains(r#""x": 32"#), "{held}");
+    // Letting go writes where it ends, and the JSON follows.
+    let _ = app.update(Message::Release);
+    assert_eq!(base(&app, &group, Property::X), Some(Value::Number(40.0)));
+    let _ = simulator(app.view());
+    assert!(app.held_json.borrow().is_none());
+}
 
 #[test]
 fn dragging_a_layer_moves_it_in_one_undo_step() {

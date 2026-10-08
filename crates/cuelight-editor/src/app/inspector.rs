@@ -393,7 +393,12 @@ impl App {
         }
 
         panel = panel.push(container(text("JSON").size(12)).padding([6, 0]).boxed());
-        let json = match self.written(show, path, layer) {
+        let held = self
+            .grab
+            .is_some()
+            .then(|| self.held_json.borrow().clone())
+            .flatten();
+        let json = match held.or_else(|| self.written(show, path, layer)) {
             Some(written) => written,
             None => {
                 // The document does not have the layer where the engine
@@ -402,6 +407,9 @@ impl App {
                 serde_json::to_string_pretty(layer).unwrap_or_default()
             }
         };
+        // While a drag is on, the JSON stays as it began: the text is laid
+        // out once, not on every frame, and follows when it lets go.
+        *self.held_json.borrow_mut() = self.grab.is_some().then(|| json.clone());
         panel = panel.push(json_text(&json, &theme(self)));
         panel
     }

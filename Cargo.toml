@@ -39,3 +39,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# The engine, vello, wgpu and the rest optimized in a debug build too:
+# the editor's own crates stay quick to rebuild, and a show still draws
+# and reloads at a usable speed while working on them.
+[profile.dev.package."*"]
+opt-level = 2

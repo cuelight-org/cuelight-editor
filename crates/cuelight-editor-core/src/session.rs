@@ -33,6 +33,9 @@ pub struct Session {
     /// When the active scene was entered, on the show's clock: what the
     /// scene's own clock counts from.
     pub entered: f64,
+    /// The scenes entered so far, in order: what the show has played up
+    /// to the playhead, so a seek back takes later ones out.
+    pub entries: Vec<Entry>,
     /// Bumped whenever the show moved, so a frame is redrawn only then.
     pub revision: u64,
     /// Inputs fired by hand are recorded, so a scrub replays them.
@@ -48,6 +51,18 @@ pub struct Session {
     /// The paths of the show's files, for the audit to know what is
     /// there; empty when the show came without a folder.
     pub files: Vec<String>,
+}
+
+/// A scene entered: when, which, the scene it left and what entered it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub at: f64,
+    pub scene: String,
+    /// The scene active before, `None` for the first entry.
+    pub from: Option<String>,
+    /// What entered it, in the trace's words: `at load`, `on "next",
+    /// fired by hand`.
+    pub by: String,
 }
 
 /// One thing that happened in a session.
@@ -94,6 +109,7 @@ impl Session {
             // A show opens paused at 0; playing is asked for.
             paused: true,
             entered: 0.0,
+            entries: Vec::new(),
             revision: 0,
             recording: true,
             driving: true,
@@ -244,7 +260,7 @@ impl Session {
         if traced.is_empty() {
             return;
         }
-        self.note_entered(&traced);
+        self.note_entered(&traced, false);
         self.log.extend(traced.iter().map(log::traced));
         self.revision += 1;
     }
@@ -307,37 +323,58 @@ impl Session {
         let _ = engine.drain_events();
         let traced = engine.drain_trace();
         drop(engine);
-        self.note_entered(&traced);
+        self.note_entered(&traced, true);
     }
 
-    /// Take when the active scene was entered from what the engine
-    /// traced: the last entry in it, if any.
-    fn note_entered(&mut self, traced: &[Traced]) {
-        if let Some(entry) = traced
-            .iter()
-            .rev()
-            .find(|t| matches!(t.what, cuelight_core::Happened::Entered { .. }))
-        {
-            self.entered = entry.at;
+    /// Take the scenes entered from what the engine traced, after the
+    /// ones before or, for a replay from the start (`fresh`), in their
+    /// place; and when the active scene was entered: the last entry in
+    /// it, if any.
+    fn note_entered(&mut self, traced: &[Traced], fresh: bool) {
+        if fresh {
+            self.entries.clear();
+        }
+        for t in traced {
+            if let cuelight_core::Happened::Entered { scene, by } = &t.what {
+                let from = self.entries.last().map(|e| e.scene.clone());
+                self.entries.push(Entry {
+                    at: t.at,
+                    scene: scene.clone(),
+                    from,
+                    by: by.to_string(),
+                });
+                self.entered = t.at;
+            }
+        }
+        if self.entries.len() > KEPT {
+            self.entries.drain(..self.entries.len() - KEPT);
         }
     }
 
     /// Enter scene `scene`, paused at the instant it is entered: by
-    /// firing its first trigger as a hand input, or, for a scene no
-    /// trigger enters (the first, entered at load), by restarting.
-    pub fn enter_scene(&mut self, scene: usize, now: Instant) {
+    /// firing its first trigger as a hand input, or, for the first scene
+    /// when no trigger enters it (it is entered at load), by restarting.
+    /// A later scene no trigger enters cannot be entered: `false`.
+    pub fn enter_scene(&mut self, scene: usize, now: Instant) -> bool {
         let trigger = {
             let engine = lock(&self.engine);
-            let Some(scene) = engine.show().and_then(|show| show.scenes.get(scene)) else {
-                return;
+            let Some(entered) = engine.show().and_then(|show| show.scenes.get(scene)) else {
+                return false;
             };
-            scene.trigger.iter().next().map(str::to_owned)
+            entered.trigger.iter().next().map(str::to_owned)
         };
-        self.paused = true;
         match trigger {
-            Some(trigger) => self.fire(&trigger),
-            None => self.restart(now),
+            Some(trigger) => {
+                self.paused = true;
+                self.fire(&trigger);
+            }
+            None if scene == 0 => {
+                self.paused = true;
+                self.restart(now);
+            }
+            None => return false,
         }
+        true
     }
 
     /// How long the active scene's own clock runs: to the end of its
@@ -408,7 +445,7 @@ impl Session {
         self.log.clear_played();
         let traced = lock(&self.engine).drain_trace();
         self.entered = 0.0;
-        self.note_entered(&traced);
+        self.note_entered(&traced, true);
         self.anchor = Some(now);
         self.time = 0.0;
         self.revision += 1;

@@ -7,6 +7,7 @@ use cuelight_core::Influence;
 use cuelight_editor_core::document::{Part, Pointer};
 use cuelight_editor_core::edit;
 use cuelight_editor_core::fields;
+use cuelight_editor_core::scenes;
 
 /// A field typed into: one of the picked layer's properties, one of
 /// its other fields by label, or a row of one of the show's lists.
@@ -15,6 +16,8 @@ pub(super) enum Typed {
     Property(Property),
     Field(&'static str),
     Row(cuelight_editor_core::lists::List, Option<String>),
+    /// A trigger row of the picked scene.
+    Trigger(Option<usize>),
 }
 
 /// A field of the picked layer as its row shows it.
@@ -228,6 +231,7 @@ impl App {
             let _ = self.apply_field(label);
         }
         self.commit_lists(keep.as_ref());
+        let _ = self.apply_triggers(keep.as_ref());
         if self.style_name_typed.is_some() && keep.is_none() {
             let _ = self.rename_style();
         }
@@ -245,6 +249,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|(of, typed)| *of == self.fields_of() && !typed.is_empty())
             || (self.selection.is_empty() && !self.list_typed.is_empty())
+            || !self.triggers_typed.is_empty()
             || self.style_name_typed.is_some()
     }
 
@@ -374,9 +379,10 @@ impl App {
         let Some(session) = &self.session else {
             return;
         };
-        if let FieldsOf::Style(name) = self.fields_of() {
-            self.refresh_style_fields(&name);
-            return;
+        match self.fields_of() {
+            FieldsOf::Style(name) => return self.refresh_style_fields(&name),
+            FieldsOf::Scene(index) => return self.refresh_scene_fields(index),
+            _ => {}
         }
         let Some(path) = self.selection.last() else {
             self.refresh_show_settings();
@@ -444,6 +450,40 @@ impl App {
         }
     }
 
+    /// A scene's fields as their rows show them: what it writes, or what
+    /// the show has, which is what it leaves out.
+    fn refresh_scene_fields(&mut self, index: usize) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let at = scenes::pointer(index);
+        if document.get(&at).is_none() {
+            return;
+        }
+        for field in fields::SCENE_FIELDS {
+            let own = fields::written_value(document, &at, field);
+            let show = fields::SHOW_FIELDS
+                .iter()
+                .find(|f| f.path == field.path && field.path != ["name"]);
+            let default = show.and_then(|show| {
+                fields::written_value(document, &Pointer::default(), show)
+                    .or_else(|| fields::show_default(show))
+            });
+            let value = own.as_ref().or(default.as_ref());
+            self.layer_fields.push(LayerField {
+                field,
+                shown: own.as_ref().and_then(|v| fields::show(field, v)),
+                default: default
+                    .as_ref()
+                    .and_then(|v| fields::show(field, v))
+                    .unwrap_or_default(),
+                raw: value.map(ToString::to_string).unwrap_or_default(),
+                editable: value.is_none_or(|v| fields::show(field, v).is_some()),
+                written: own.is_some(),
+            });
+        }
+    }
+
     /// A font style's fields as their rows show them: what it writes, or
     /// what the engine reads without it.
     fn refresh_style_fields(&mut self, name: &str) {
@@ -491,9 +531,10 @@ impl App {
         {
             return FieldsOf::Style(style.clone());
         }
-        match self.selection.last() {
-            Some(path) => FieldsOf::Layer(path.clone()),
-            None => FieldsOf::Show,
+        match (self.selection.last(), self.scene) {
+            (Some(path), _) => FieldsOf::Layer(path.clone()),
+            (None, Some(index)) => FieldsOf::Scene(index),
+            (None, None) => FieldsOf::Show,
         }
     }
 
@@ -502,6 +543,7 @@ impl App {
         match self.fields_of() {
             FieldsOf::Layer(path) => self.layer_pointer(&path),
             FieldsOf::Show => Some(Pointer::default()),
+            FieldsOf::Scene(index) => Some(scenes::pointer(index)),
             FieldsOf::Style(name) => Some(style_pointer(&name)),
         }
     }
@@ -562,6 +604,12 @@ impl App {
         let Some(at) = self.fields_owner() else {
             return Task::none();
         };
+        // A scene's name is told apart from the other scenes'.
+        if let FieldsOf::Scene(index) = self.fields_of()
+            && field.path == ["name"]
+        {
+            return self.rename_scene(index, &typed);
+        }
         let of_show = self.fields_of() == FieldsOf::Show;
         let Some(document) = &mut self.document else {
             return Task::none();
@@ -761,6 +809,8 @@ impl App {
 pub(super) enum FieldsOf {
     Show,
     Layer(LayerPath),
+    /// A scene, by its place in the show's scenes.
+    Scene(usize),
     /// A font style, by its name in the show's `fonts`.
     Style(String),
 }

@@ -313,7 +313,7 @@ fn shift(pointer: &mut Pointer, at: &Pointer, by: isize) {
 
 /// Run `edit` as one undo step. An edit that fails half way is taken
 /// back, so the document is as it was.
-fn step<T>(
+pub(crate) fn step<T>(
     document: &mut Document,
     edit: impl FnOnce(&mut Document) -> Result<T, String>,
 ) -> Result<T, String> {
@@ -327,7 +327,7 @@ fn step<T>(
     done
 }
 
-fn said(error: EditError) -> String {
+pub(crate) fn said(error: EditError) -> String {
     error.to_string()
 }
 

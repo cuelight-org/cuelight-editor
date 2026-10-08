@@ -41,7 +41,10 @@ impl App {
             return self.asset_panel(session, i, size);
         }
         let Some(path) = self.selection.last() else {
-            return self.show_panel();
+            return match self.scene {
+                Some(index) => self.scene_panel(session, index),
+                None => self.show_panel(),
+            };
         };
         let engine = lock(&session.engine);
         let Some(show) = engine.show() else {

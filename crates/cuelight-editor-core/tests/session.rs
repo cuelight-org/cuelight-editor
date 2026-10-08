@@ -98,14 +98,29 @@ fn a_scene_entered_by_its_heading_counts_its_own_clock() {
         Some(What::Fired(t)) if t == "next"
     ));
 
+    // Where it was entered from, and by what.
+    let last = session.entries.last().cloned().unwrap();
+    assert_eq!(
+        (last.at, last.scene.as_str(), last.from.as_deref()),
+        (2.5, "second", Some("intro"))
+    );
+    assert!(last.by.contains("\"next\""), "{}", last.by);
+
     // Within the scene: a seek to its entry plus a time.
     session.seek(session.entered + 0.5, now);
     assert_eq!(session.time, 3.0);
     assert_eq!(session.entered, 2.5, "a scrub replays the entry");
+    assert_eq!(session.entries.last(), Some(&last), "and keeps it");
+    session.seek(1.0, now);
+    assert!(
+        session.entries.iter().all(|e| e.scene == "intro"),
+        "a seek back takes later entries out"
+    );
+    session.seek(3.0, now);
     assert_eq!(x_of(&session, "bar"), Some(10.0));
 
     // The first scene has no trigger: entering it restarts the show.
-    session.enter_scene(0, now);
+    assert!(session.enter_scene(0, now));
     assert!(session.paused);
     assert_eq!(session.time, 0.0);
     assert_eq!(session.entered, 0.0);

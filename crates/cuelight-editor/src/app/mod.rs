@@ -689,6 +689,7 @@ impl App {
         );
         let picked_on_stage = matches!(message, Message::Pick(..));
         let picked_in_tree = matches!(message, Message::Choose(_));
+        let questions = self.questions();
         let task = self.handle(message);
         // A layer picked in the tree, or added, shows on the stage: its
         // scene is entered.
@@ -714,12 +715,32 @@ impl App {
         } else {
             task
         };
+        // A question coming or going changes the stage's room: a fitted
+        // show is centred again in it. At a set zoom the scroll keeps the
+        // same point in the middle by itself.
+        let task = if self.questions() != questions {
+            Task::batch([task, self.recentre_fitted()])
+        } else {
+            task
+        };
         self.keep_journal();
         self.refresh_fields();
         self.refresh_bases();
         self.refresh_fields_of_layer();
         self.refresh_log();
         task
+    }
+
+    /// How many questions wait in bars above the stage.
+    fn questions(&self) -> usize {
+        #[cfg(not(target_arch = "wasm32"))]
+        let outside = self.outside.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let outside = false;
+        [self.closing, outside, self.journal.offer.is_some()]
+            .into_iter()
+            .filter(|&asked| asked)
+            .count()
     }
 
     /// What the variable fields show now.
@@ -854,17 +875,8 @@ impl App {
                 }
                 None => Task::none(),
             },
-            // The bar going gives the stage its room back: a fitted show
-            // is centred again in it. At a set zoom the scroll keeps the
-            // same point in the middle by itself.
-            Message::RestoreEdits => {
-                let task = self.restore_edits();
-                Task::batch([task, self.recentre_fitted()])
-            }
-            Message::DiscardEdits => {
-                let task = self.discard_edits();
-                Task::batch([task, self.recentre_fitted()])
-            }
+            Message::RestoreEdits => self.restore_edits(),
+            Message::DiscardEdits => self.discard_edits(),
             Message::Picked(picked) => {
                 self.asking = false;
                 match picked {
@@ -1740,11 +1752,13 @@ impl App {
                 ],
             )
         });
+        // The questions sit in a column of their own, always there: one
+        // coming or going leaves the body in its place, so iced keeps its
+        // state (the stage's scroll, its view) rather than building it anew.
+        let questions = column![closing, asking, restore];
         column![
             container(bar).padding(8).width(Fill),
-            closing,
-            asking,
-            restore,
+            questions,
             body,
             status
         ]

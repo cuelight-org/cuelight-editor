@@ -126,10 +126,13 @@ impl App {
                 style.gap = Some(theme.palette().background.weak.color.into());
                 style
             });
-        let solo_bar = self
-            .solo
-            .as_ref()
-            .map(|solo| container(self.solo_bar(solo)).padding([4, 8]));
+        // In a column of its own, always there: the bar coming or going
+        // leaves the stage in its place, so iced keeps its scroll.
+        let solo_bar = column![
+            self.solo
+                .as_ref()
+                .map(|solo| container(self.solo_bar(solo)).padding([4, 8]))
+        ];
         column![
             container(bar).padding([4, 8]).height(BAR),
             solo_bar,

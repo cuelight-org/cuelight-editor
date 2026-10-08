@@ -750,16 +750,22 @@ impl App {
         task
     }
 
-    /// How many questions wait in bars above the stage.
+    /// How many bars stand above the stage: the questions waiting, and
+    /// the solo's.
     fn questions(&self) -> usize {
         #[cfg(not(target_arch = "wasm32"))]
         let outside = self.outside.is_some();
         #[cfg(target_arch = "wasm32")]
         let outside = false;
-        [self.closing, outside, self.journal.offer.is_some()]
-            .into_iter()
-            .filter(|&asked| asked)
-            .count()
+        [
+            self.closing,
+            outside,
+            self.journal.offer.is_some(),
+            self.solo.is_some(),
+        ]
+        .into_iter()
+        .filter(|&asked| asked)
+        .count()
     }
 
     /// The session the host's inputs go to: the solo's while soloing,

@@ -147,3 +147,23 @@ pub fn offer_download(name: &str, bytes: &[u8]) -> Result<(), String> {
     link.click();
     web_sys::Url::revoke_object_url(&url).map_err(said)
 }
+
+/// Ask where to write a file, named `name` in `folder` to begin with,
+/// of the kind `filter` names with its extensions. Desktop only: a
+/// browser downloads instead.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn save_to(
+    title: &'static str,
+    name: String,
+    folder: Option<std::path::PathBuf>,
+    filter: (&'static str, &'static [&'static str]),
+) -> Option<std::path::PathBuf> {
+    let mut dialog = rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .set_file_name(name)
+        .add_filter(filter.0, filter.1);
+    if let Some(folder) = folder {
+        dialog = dialog.set_directory(folder);
+    }
+    Some(dialog.save_file().await?.path().to_owned())
+}

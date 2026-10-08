@@ -39,6 +39,7 @@ mod library;
 mod lists;
 mod manipulate;
 mod scenes;
+mod solo;
 mod sound;
 mod stage;
 mod styles;
@@ -47,6 +48,7 @@ mod watching;
 
 use assets::{faces, load_fonts, thumbs};
 use inputs_panel::key_name;
+use solo::SoloMessage;
 
 /// What the command line asked for (desktop only).
 #[cfg(not(target_arch = "wasm32"))]
@@ -65,6 +67,9 @@ pub struct Options {
     /// name in the library.
     #[arg(long, value_name = "NAME")]
     pub asset: Option<String>,
+    /// Solo the layer picked with `--pick`, after the triggers.
+    #[arg(long)]
+    pub solo: bool,
     /// Fire a trigger once the show is open; repeatable, in order.
     #[arg(long, value_name = "TRIGGER")]
     pub trigger: Vec<String>,
@@ -245,6 +250,12 @@ pub struct App {
     /// The modifier keys held: Shift or Ctrl with a click in the tree
     /// adds to the selection.
     held: keyboard::Modifiers,
+    /// The layer soloed, playing alone on the stage.
+    solo: Option<cuelight_editor_core::solo::Solo>,
+    /// How many frames a strip of the solo takes, and over how many
+    /// seconds, as typed.
+    strip_frames: String,
+    strip_seconds: String,
 }
 
 /// An area of the window.
@@ -532,6 +543,8 @@ pub enum Message {
     /// or why it did not decode.
     #[cfg(target_arch = "wasm32")]
     SoundsReady(Vec<(String, Result<f64, String>)>),
+    /// Something done to the solo, or soloing.
+    Solo(SoloMessage),
 }
 
 impl App {
@@ -608,6 +621,9 @@ impl App {
             closing: false,
             path_typed: None,
             held: keyboard::Modifiers::default(),
+            solo: None,
+            strip_frames: "8".to_owned(),
+            strip_seconds: "1".to_owned(),
             fitted: Cell::new(1.0),
             log_open: true,
             follow_scene: false,
@@ -631,6 +647,9 @@ impl App {
             }
             if let Some(point) = options.pick {
                 then = then.chain(Task::done(Message::Pick(point, Pick::default())));
+            }
+            if options.solo {
+                then = then.chain(Task::done(Message::Solo(SoloMessage::Enter)));
             }
             if let Some(name) = options.asset {
                 then = then.chain(Task::done(Message::Reveal(name)));
@@ -731,21 +750,41 @@ impl App {
         task
     }
 
-    /// How many questions wait in bars above the stage.
+    /// How many bars stand above the stage: the questions waiting, and
+    /// the solo's.
     fn questions(&self) -> usize {
         #[cfg(not(target_arch = "wasm32"))]
         let outside = self.outside.is_some();
         #[cfg(target_arch = "wasm32")]
         let outside = false;
-        [self.closing, outside, self.journal.offer.is_some()]
-            .into_iter()
-            .filter(|&asked| asked)
-            .count()
+        [
+            self.closing,
+            outside,
+            self.journal.offer.is_some(),
+            self.solo.is_some(),
+        ]
+        .into_iter()
+        .filter(|&asked| asked)
+        .count()
+    }
+
+    /// The session the host's inputs go to: the solo's while soloing,
+    /// the show's otherwise.
+    fn played(&mut self) -> Option<&mut Session> {
+        match &mut self.solo {
+            Some(solo) => Some(&mut solo.session),
+            None => self.session.as_mut(),
+        }
     }
 
     /// What the variable fields show now.
     fn refresh_fields(&mut self) {
-        let Some(session) = &self.session else {
+        let Some(session) = self
+            .solo
+            .as_ref()
+            .map(|s| &s.session)
+            .or(self.session.as_ref())
+        else {
             self.fields.clear();
             return;
         };
@@ -902,6 +941,11 @@ impl App {
                 Task::none()
             }
             Message::Tick(now) => {
+                if let Some(solo) = &mut self.solo
+                    && !solo.session.paused
+                {
+                    solo.session.tick(now);
+                }
                 if let Some(session) = &mut self.session
                     && !session.paused
                 {
@@ -991,6 +1035,22 @@ impl App {
                 {
                     return self.nudge(by);
                 }
+                // Soloing, the transport keys and the show's own keys are
+                // the solo's, and Escape leaves it.
+                if !modifiers.control()
+                    && let Some(solo) = &mut self.solo
+                {
+                    match name.as_str() {
+                        " " => return self.update(Message::Solo(SoloMessage::TogglePause)),
+                        "r" => return self.update(Message::Solo(SoloMessage::Restart)),
+                        "Escape" => return self.update(Message::Solo(SoloMessage::Leave)),
+                        _ if self.inputs.keys.contains_key(name.as_str()) => {
+                            solo.session.key(&name);
+                            return Task::none();
+                        }
+                        _ => {}
+                    }
+                }
                 // The show's keys first; with Ctrl held the editor's own
                 // shortcuts are reached whatever the show maps.
                 if !modifiers.control()
@@ -1044,7 +1104,7 @@ impl App {
                 Task::none()
             }
             Message::Fire(trigger) => {
-                if let Some(session) = &mut self.session {
+                if let Some(session) = self.played() {
                     session.fire(&trigger);
                 }
                 Task::none()
@@ -1055,13 +1115,13 @@ impl App {
             }
             Message::Set(name, text) => {
                 self.edits.remove(&name);
-                if let Some(session) = &mut self.session {
+                if let Some(session) = self.played() {
                     session.set(&name, inputs::parse_value(&text));
                 }
                 Task::none()
             }
             Message::Record(on) => {
-                if let Some(session) = &mut self.session {
+                if let Some(session) = self.played() {
                     session.recording = on;
                 }
                 Task::none()
@@ -1327,6 +1387,7 @@ impl App {
                 self.panes.resize(split, ratio);
                 Task::none()
             }
+            Message::Solo(message) => self.solo_message(message),
         }
     }
 
@@ -1371,6 +1432,7 @@ impl App {
             rows.iter()
                 .any(|row| matches!(row, Row::Layer { path, .. } if path == picked))
         });
+        self.reload_solo();
         Ok(())
     }
 
@@ -1450,6 +1512,7 @@ impl App {
                     .collect();
                 self.active_seen = engine.active_scene().map(str::to_owned);
                 self.follow_scene = false;
+                self.solo = None;
                 self.selection.clear();
                 self.scene = None;
                 self.triggers_typed.clear();
@@ -1507,6 +1570,7 @@ impl App {
         // Frames while the show plays, and while a previewed sound does:
         // its end is noticed on a frame.
         if self.session.as_ref().is_some_and(|s| !s.paused)
+            || self.solo.as_ref().is_some_and(|s| !s.session.paused)
             || waiting_to_shoot
             || self.preview.is_some()
         {
@@ -1702,7 +1766,9 @@ impl App {
             .boxed(),
             Some(session) => iced::widget::pane_grid(&self.panes, move |_, pane, _| {
                 pane_grid::Content::new(match pane {
-                    Pane::Inputs => scrollable(self.inputs_panel(session))
+                    Pane::Inputs => scrollable(
+                        self.inputs_panel(self.solo.as_ref().map_or(session, |s| &s.session)),
+                    )
                         .width(Fill)
                         .height(Fill)
                         .boxed(),

@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use cuelight::Engine;
 use cuelight::render::Presenter;
 use cuelight_core::LayerPath;
+use cuelight_editor_core::placement::{self, Clip, ClipHandle, ClipShape};
 use iced::advanced::widget::{Operation, Tree, tree};
 use iced::advanced::{Layout, Shell, Widget, layout, renderer};
 use iced::widget::shader::{self, Action, Shader, Viewport};
@@ -56,6 +57,8 @@ pub enum Grip {
     Scale,
     /// The round knob over its box: the drag turns it.
     Turn,
+    /// A handle of the picked group's clip: the drag reshapes the clip.
+    Clip(ClipHandle),
 }
 
 /// The keys held during a drag: Shift keeps proportions or turns in
@@ -200,6 +203,11 @@ const HANDLE: f64 = 7.0;
 /// radius, in logical pixels.
 const KNOB_GAP: f64 = 22.0;
 const KNOB: f64 = 4.5;
+/// Half the width of a clip's diamond handle, and how far a corner one
+/// sits in from the clip's corner, off the scale handle there, in
+/// logical pixels.
+const DIAMOND: f64 = 4.5;
+const CLIP_INSET: f64 = 14.0;
 /// How near a handle the pointer takes hold of it, in logical pixels.
 const REACH: f64 = 7.0;
 /// How far the pointer goes before a press is a drag, in logical pixels.
@@ -307,6 +315,45 @@ fn handles(corners: [[f64; 2]; 4], unit: f64) -> Handles {
     }
 }
 
+/// A clip's handles on screen: where the clip has them, but a corner's
+/// set in towards the middle, so it is not under the corner a group
+/// scales by when the clip is its box. `unit` as for [`handles`].
+fn clip_handles(clip: &Clip, fitted: &Fitted, unit: f64) -> Vec<(ClipHandle, [f64; 2])> {
+    let middle = fitted.screen(clip.centre());
+    clip.handles()
+        .into_iter()
+        .map(|(handle, at)| {
+            let at = fitted.screen(at);
+            let ClipHandle::Side([x, y]) = handle else {
+                return (handle, at);
+            };
+            if x == 0 || y == 0 {
+                return (handle, at);
+            }
+            // Not past a third of the way in, so a small clip keeps its
+            // corners apart.
+            let (dx, dy) = (middle[0] - at[0], middle[1] - at[1]);
+            let length = dx.hypot(dy);
+            if length < 1e-9 {
+                return (handle, at);
+            }
+            let inset = (CLIP_INSET * unit).min(length / 3.0);
+            (
+                handle,
+                [at[0] + dx / length * inset, at[1] + dy / length * inset],
+            )
+        })
+        .collect()
+}
+
+/// The clip of the one layer picked, if it is a group with one.
+fn picked_clip(engine: &Engine, selection: &[LayerPath]) -> Option<Clip> {
+    let [one] = selection else {
+        return None;
+    };
+    placement::clip(engine, one)
+}
+
 /// Whether `point` is inside the box with these corners, turned or not.
 fn inside(corners: &[[f64; 2]; 4], [x, y]: [f64; 2]) -> bool {
     let mut sides = [false, false];
@@ -323,7 +370,8 @@ fn inside(corners: &[[f64; 2]; 4], [x, y]: [f64; 2]) -> bool {
 }
 
 /// What a press at `point`, in logical pixels in the widget, takes hold
-/// of: a handle of the one layer picked, or a picked layer's box.
+/// of: a handle of the one layer picked or of its clip, or a picked
+/// layer's box.
 fn grip_at(
     engine: &Engine,
     selection: &[LayerPath],
@@ -331,16 +379,22 @@ fn grip_at(
     point: [f64; 2],
 ) -> Option<Grip> {
     let boxes = boxes(engine, selection);
+    let near = |[x, y]: [f64; 2]| (x - point[0]).abs() <= REACH && (y - point[1]).abs() <= REACH;
     if let ([one], [_]) = (boxes.as_slice(), selection) {
         let handles = handles(one.map(|c| fitted.screen(c)), 1.0);
-        let near =
-            |[x, y]: [f64; 2]| (x - point[0]).abs() <= REACH && (y - point[1]).abs() <= REACH;
         if near(handles.knob) {
             return Some(Grip::Turn);
         }
         if handles.corners.iter().any(|c| near(*c)) {
             return Some(Grip::Scale);
         }
+    }
+    if let Some(clip) = picked_clip(engine, selection)
+        && let Some((handle, _)) = clip_handles(&clip, fitted, 1.0)
+            .into_iter()
+            .find(|(_, at)| near(*at))
+    {
+        return Some(Grip::Clip(handle));
     }
     let canvas = fitted.canvas(point);
     boxes
@@ -496,9 +550,10 @@ impl<Message> shader::Program<Message> for Stage<Message> {
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         let shape = |grip| match grip {
-            Grip::Move => mouse::Interaction::Move,
+            Grip::Move | Grip::Clip(ClipHandle::Centre) => mouse::Interaction::Move,
             Grip::Scale => mouse::Interaction::ResizingDiagonallyDown,
             Grip::Turn => mouse::Interaction::Grab,
+            Grip::Clip(_) => mouse::Interaction::Crosshair,
         };
         if let Some(holding) = state.holding.filter(|h| h.dragging) {
             return match holding.grip {
@@ -657,6 +712,48 @@ fn outline(
     }
 }
 
+/// Draw the picked group's clip dashed, in a colour of its own, with
+/// diamonds for its handles; `unit` as for [`outline`].
+fn outline_clip(scene: &mut vello::Scene, clip: &Clip, fitted: &Fitted, unit: f64) {
+    use vello::kurbo::{Affine, BezPath, Circle, Point, RoundedRect, Shape, Stroke};
+    let color = vello::peniko::Color::from_rgba8(0xFF, 0xA8, 0x1F, 0xFF);
+    let white = vello::peniko::Color::from_rgba8(0xFF, 0xFF, 0xFF, 0xFF);
+    let line = Stroke::new(1.5 * unit);
+    let dashed = Stroke::new(1.5 * unit).with_dashes(0.0, [5.0 * unit, 3.0 * unit]);
+    // The clip in the group's space, put on screen as a path, so the
+    // line keeps its width however the group is scaled.
+    let on_screen = Affine::new([fitted.sx, 0.0, 0.0, fitted.sy, fitted.x, fitted.y])
+        * Affine::new(clip.transform.0);
+    let path = match clip.shape {
+        ClipShape::Rect {
+            rect: [x, y, w, h],
+            radius,
+        } => {
+            let radius = radius.min(w.abs() / 2.0).min(h.abs() / 2.0).max(0.0);
+            RoundedRect::new(x, y, x + w, y + h, radius).to_path(0.01)
+        }
+        ClipShape::Circle([cx, cy, r]) => Circle::new((cx, cy), r.abs()).to_path(0.01),
+    };
+    scene.stroke(&dashed, Affine::IDENTITY, color, None, &(on_screen * path));
+    let half = DIAMOND * unit;
+    for (_, [x, y]) in clip_handles(clip, fitted, unit) {
+        let mut diamond = BezPath::new();
+        diamond.move_to(Point::new(x, y - half));
+        diamond.line_to(Point::new(x + half, y));
+        diamond.line_to(Point::new(x, y + half));
+        diamond.line_to(Point::new(x - half, y));
+        diamond.close_path();
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            white,
+            None,
+            &diamond,
+        );
+        scene.stroke(&line, Affine::IDENTITY, color, None, &diamond);
+    }
+}
+
 impl shader::Primitive for Frame {
     type Pipeline = Pipeline;
 
@@ -765,6 +862,9 @@ impl shader::Primitive for Frame {
                     show.size,
                     f64::from(scale),
                 );
+                if let Some(clip) = picked_clip(&engine, &self.selection) {
+                    outline_clip(&mut presented.scene, &clip, &fitted, f64::from(scale));
+                }
             }
             presented
         };
@@ -1269,6 +1369,39 @@ mod tests {
             send(&stage, &mut state, PRESS, [120.0, 120.0]),
             Some(Sent::Press([30.0, 30.0]))
         );
+    }
+
+    #[test]
+    fn a_clip_has_its_own_handles_off_the_scale_corners() {
+        // The clip is the group's box: its corners are where the group
+        // scales, so the clip's are set in from them.
+        let engine = engine(
+            r##"{"name": "g", "type": "group", "x": 10, "y": 20, "clip": {"rect": [0, 0, 40, 30]},
+                "children": [{"name": "r", "type": "shape", "shape": {"rect": [0, 0, 100, 100]}, "fill": "#FFFFFF"}]}"##,
+        );
+        let fitted = Fitted::new(&engine, 800.0, 800.0).unwrap();
+        let g = [LayerPath::new(Root::Show, [0])];
+        let grip = |at| grip_at(&engine, &g, &fitted, at);
+        assert_eq!(grip([40.0, 80.0]), Some(Grip::Scale));
+        // The middle is 80 across and 60 down from the top left corner.
+        let in_from_corner = [40.0 + CLIP_INSET * 0.8, 80.0 + CLIP_INSET * 0.6];
+        assert_eq!(
+            grip(in_from_corner),
+            Some(Grip::Clip(ClipHandle::Side([-1, -1])))
+        );
+        // The middle of its right side; inside, away from the handles,
+        // the group moves.
+        assert_eq!(
+            grip([200.0, 140.0]),
+            Some(Grip::Clip(ClipHandle::Side([1, 0])))
+        );
+        assert_eq!(grip([120.0, 140.0]), Some(Grip::Move));
+        // A shape picked has no clip handles.
+        let r = [LayerPath::new(Root::Show, [0, 0])];
+        assert!(!matches!(
+            grip_at(&engine, &r, &fitted, [200.0, 140.0]),
+            Some(Grip::Clip(_))
+        ));
     }
 
     #[test]

@@ -2,11 +2,14 @@
 //! the selection or one of its handles, and the arrow keys. What changes
 //! is the base value, one undo step a drag or a key; where a timeline or
 //! binding owns the property at the playhead, the inspector asks first.
+//! A group's clip is reshaped by its own handles, which nothing else
+//! owns.
 
 use super::*;
 use cuelight::Engine;
+use cuelight_editor_core::document::{Part, Pointer};
 use cuelight_editor_core::edit;
-use cuelight_editor_core::placement::{self, Lines, Placement};
+use cuelight_editor_core::placement::{self, Clip, ClipShape, Lines, Placement};
 use serde_json::Value as Json;
 use std::time::Duration;
 
@@ -44,6 +47,10 @@ pub(super) struct Grab {
     /// For a scale, the corner of the box across from the one grabbed,
     /// on the canvas: it stays where it is.
     opposite: Option<[f64; 2]>,
+    /// The group's clip as it was when a drag of one of its handles
+    /// began, and the shape it wrote last.
+    clip: Option<Clip>,
+    clipped: Option<ClipShape>,
 }
 
 /// The least time between two writes of a drag: what a screen of any
@@ -56,7 +63,24 @@ fn properties(grip: Grip) -> &'static [Property] {
         Grip::Move => &[Property::X, Property::Y],
         Grip::Scale => &[Property::ScaleX, Property::ScaleY, Property::X, Property::Y],
         Grip::Turn => &[Property::Rotation],
+        Grip::Clip(_) => &[],
     }
+}
+
+/// Where in the document a group writes its clip's numbers, under
+/// the group at `group`, and the numbers: `clip/rect` or
+/// `clip/circle`. A rect's `radius` beside them stays as it is.
+fn clip_numbers(group: &Pointer, shape: ClipShape) -> (Pointer, Json) {
+    let (key, numbers) = match shape {
+        ClipShape::Rect { rect, .. } => ("rect", rect.to_vec()),
+        ClipShape::Circle(circle) => ("circle", circle.to_vec()),
+    };
+    (
+        group
+            .then(Part::Key("clip".to_owned()))
+            .then(Part::Key(key.to_owned())),
+        Json::Array(numbers.into_iter().map(|n| number(n, 3)).collect()),
+    )
 }
 
 /// `value` as the document writes it: to `places` decimals, and as an
@@ -148,7 +172,9 @@ impl App {
     pub(super) fn grab(&mut self, grip: Grip, at: [f64; 2]) -> Task<Message> {
         let picked = match grip {
             Grip::Move => self.movable(),
-            Grip::Scale | Grip::Turn => self.selection.last().cloned().into_iter().collect(),
+            Grip::Scale | Grip::Turn | Grip::Clip(_) => {
+                self.selection.last().cloned().into_iter().collect()
+            }
         };
         let Some(session) = &self.session else {
             return Task::none();
@@ -186,9 +212,19 @@ impl App {
             }),
             _ => None,
         };
+        let clip = match grip {
+            Grip::Clip(_) => picked
+                .first()
+                .and_then(|path| placement::clip(&engine, path)),
+            _ => None,
+        };
         drop(engine);
         if layers.is_empty() {
             self.status = "this layer is not placed on the stage".to_owned();
+            return Task::none();
+        }
+        if matches!(grip, Grip::Clip(_)) && clip.is_none() {
+            self.status = "this group has no clip with handles".to_owned();
             return Task::none();
         }
         // Asked before the engine is held again.
@@ -215,6 +251,8 @@ impl App {
             guides: [None, None],
             written: None,
             opposite,
+            clip,
+            clipped: None,
         };
         // Where it starts, unsnapped: what a drag that changed nothing
         // ends on.
@@ -283,6 +321,17 @@ impl App {
         let Some(grab) = &mut self.grab else {
             return Task::none();
         };
+        if let (Grip::Clip(handle), Some(clip)) = (grab.grip, grab.clip) {
+            let shape = clip.dragged(handle, grab.from, grab.to);
+            if let (Some(shape), Some((path, _))) = (shape, grab.layers.first())
+                && grab.clipped != Some(shape)
+            {
+                grab.clipped = Some(shape);
+                let path = path.clone();
+                self.write_clip(&path, shape);
+            }
+            return Task::none();
+        }
         let (edits, guides) = grab.edits();
         grab.guides = guides;
         if edits == grab.applied {
@@ -397,6 +446,28 @@ impl App {
         }
     }
 
+    /// Write the clip of the group at `path` into the document, then
+    /// load it.
+    fn write_clip(&mut self, path: &LayerPath, shape: ClipShape) {
+        let Some(group) = self.layer_pointer(path) else {
+            self.status = "the document does not have this layer where the show does".to_owned();
+            return;
+        };
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        let (at, numbers) = clip_numbers(&group, shape);
+        if let Err(error) = document.set(&at, numbers.clone()) {
+            self.status = format!("could not edit: {error}");
+            return;
+        }
+        let text = document.text();
+        match self.reload_text(&text, false) {
+            Ok(()) => self.status = format!("clip = {numbers}"),
+            Err(error) => self.status = error,
+        }
+    }
+
     /// End the step a drag or a key opened: what ended on its default
     /// is taken out, in the same step, and the document is audited.
     fn finish(&mut self, edits: &[Edit]) {
@@ -498,6 +569,8 @@ impl Grab {
                     .unwrap_or_default();
                 (edits, [None, None])
             }
+            // Written on its own, as it is no property.
+            Grip::Clip(_) => (Vec::new(), [None, None]),
         }
     }
 }

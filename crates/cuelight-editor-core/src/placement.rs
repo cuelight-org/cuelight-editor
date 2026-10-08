@@ -4,7 +4,7 @@
 //! numbers the layer writes.
 
 use cuelight::{Engine, Transform};
-use cuelight_core::{LayerKind, LayerPath, Property, root_layers};
+use cuelight_core::{LayerKind, LayerPath, Property, Shape, root_layers};
 
 /// A layer's place as the engine resolves it at the playhead.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -77,6 +77,17 @@ impl Placement {
     /// turns and scales round.
     pub fn pivot(&self) -> [f64; 2] {
         self.parent.apply([self.x, self.y])
+    }
+
+    /// The map of a group's own space onto the canvas: what its children
+    /// and its clip are placed by. A group turns round its own origin.
+    pub fn group(&self) -> Transform {
+        let scale = self.scale;
+        self.parent.then(
+            Transform::translate(self.x, self.y)
+                .then(Transform::rotate(self.rotation))
+                .then(Transform::scale(scale * self.scale_x, scale * self.scale_y)),
+        )
     }
 
     /// A distance on the canvas as a distance in the group the layer is
@@ -229,6 +240,151 @@ pub fn corners(engine: &Engine, path: &LayerPath) -> Option<[[f64; 2]; 4]> {
         return Some(drawn);
     }
     Some([[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(|p| own.apply(p)))
+}
+
+/// A group's `clip` of the kinds the stage has handles for, in the
+/// group's own coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ClipShape {
+    /// `[x, y, width, height]`, and the corner radius it keeps.
+    Rect { rect: [f64; 4], radius: f64 },
+    /// `[cx, cy, radius]`.
+    Circle([f64; 3]),
+}
+
+/// A handle of a group's clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipHandle {
+    /// A corner or the middle of a side of a rect: on each axis -1 for
+    /// its left or top edge, 1 for its right or bottom, 0 for neither.
+    Side([i8; 2]),
+    /// The point on a circle's rim right of its centre: its radius.
+    Rim,
+    /// A circle's centre: its place.
+    Centre,
+}
+
+/// A group's clip and where it lands on the canvas.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Clip {
+    /// The group's own space onto the canvas.
+    pub transform: Transform,
+    pub shape: ClipShape,
+}
+
+/// The clip of the group at `path`. `None` for a layer that is not a
+/// group, a group without one, and one clipped by a path, which has no
+/// handles.
+pub fn clip(engine: &Engine, path: &LayerPath) -> Option<Clip> {
+    let show = engine.show()?;
+    let layer = crate::tree::layer(show, path)?;
+    let LayerKind::Group {
+        clip: Some(shape), ..
+    } = &layer.kind
+    else {
+        return None;
+    };
+    let shape = match shape {
+        Shape::Rect { rect, radius } => ClipShape::Rect {
+            rect: *rect,
+            radius: radius.unwrap_or(0.0),
+        },
+        Shape::Circle { circle } => ClipShape::Circle(*circle),
+        Shape::Path { .. } => return None,
+    };
+    Some(Clip {
+        transform: placement(engine, path)?.group(),
+        shape,
+    })
+}
+
+impl Clip {
+    /// Each handle and where it is on the canvas: a rect's corners and
+    /// the middles of its sides, round from the top left; a circle's
+    /// centre and the point on its rim right of it.
+    pub fn handles(&self) -> Vec<(ClipHandle, [f64; 2])> {
+        let on_canvas = |p| self.transform.apply(p);
+        match self.shape {
+            ClipShape::Rect {
+                rect: [x, y, w, h], ..
+            } => [
+                [-1, -1],
+                [0, -1],
+                [1, -1],
+                [1, 0],
+                [1, 1],
+                [0, 1],
+                [-1, 1],
+                [-1, 0],
+            ]
+            .into_iter()
+            .map(|side: [i8; 2]| {
+                let at = |s: i8, from: f64, size: f64| from + size * f64::from(s + 1) / 2.0;
+                (
+                    ClipHandle::Side(side),
+                    on_canvas([at(side[0], x, w), at(side[1], y, h)]),
+                )
+            })
+            .collect(),
+            ClipShape::Circle([cx, cy, r]) => vec![
+                (ClipHandle::Centre, on_canvas([cx, cy])),
+                (ClipHandle::Rim, on_canvas([cx + r, cy])),
+            ],
+        }
+    }
+
+    /// Its middle on the canvas.
+    pub fn centre(&self) -> [f64; 2] {
+        match self.shape {
+            ClipShape::Rect {
+                rect: [x, y, w, h], ..
+            } => self.transform.apply([x + w / 2.0, y + h / 2.0]),
+            ClipShape::Circle([cx, cy, _]) => self.transform.apply([cx, cy]),
+        }
+    }
+
+    /// The clip with `handle` dragged from `from` to `to`, both on the
+    /// canvas, by whole units of the group. A rect's side or corner
+    /// moves and the sides across stay; one dragged past the other
+    /// turns the rect round. A circle's rim sets its radius, its centre
+    /// moves it. `None` in a group scaled flat.
+    pub fn dragged(&self, handle: ClipHandle, from: [f64; 2], to: [f64; 2]) -> Option<ClipShape> {
+        let by = linear(self.transform)
+            .invert()?
+            .apply([to[0] - from[0], to[1] - from[1]]);
+        let [dx, dy] = by.map(f64::round);
+        Some(match (self.shape, handle) {
+            (ClipShape::Rect { rect, radius }, ClipHandle::Side([sx, sy])) => {
+                let [x, y, w, h] = rect;
+                let edges = |s: i8, from: f64, size: f64, d: f64| {
+                    let (mut low, mut high) = (from, from + size);
+                    match s {
+                        -1 => low += d,
+                        1 => high += d,
+                        _ => {}
+                    }
+                    (low.min(high), (high - low).abs())
+                };
+                let (x, w) = edges(sx, x, w, dx);
+                let (y, h) = edges(sy, y, h, dy);
+                ClipShape::Rect {
+                    rect: [x, y, w, h],
+                    radius,
+                }
+            }
+            (ClipShape::Circle([cx, cy, r]), ClipHandle::Centre) => {
+                ClipShape::Circle([cx + dx, cy + dy, r])
+            }
+            (ClipShape::Circle([cx, cy, r]), ClipHandle::Rim) => {
+                // How far from the centre the rim point went, unrounded
+                // until the end.
+                let [ux, uy] = by;
+                let reach = (r + ux).hypot(uy);
+                ClipShape::Circle([cx, cy, r + (reach - r).round()])
+            }
+            _ => return None,
+        })
+    }
 }
 
 /// The lines a moving box snaps to, on the canvas: x for vertical ones,
@@ -384,6 +540,76 @@ mod tests {
         let placed = placement(&engine, &LayerPath::new(Root::Show, [0])).unwrap();
         let turned = placed.turned([20.0, 10.0], [10.0, 20.0]);
         assert!((turned - 100.0).abs() < 1e-9, "{turned}");
+    }
+
+    #[test]
+    fn a_clip_sits_where_the_engine_cuts_the_group() {
+        let engine = engine(
+            r##"{"name": "g", "type": "group", "x": 100, "y": 50, "rotation": 90, "scale": 2,
+                "clip": {"rect": [0, 0, 20, 10], "radius": 3},
+                "children": [{"name": "r", "type": "shape", "shape": {"rect": [-50, -50, 100, 100]}, "fill": "#FFFFFF"}]}"##,
+        );
+        let g = LayerPath::new(Root::Show, [0]);
+        let clip = clip(&engine, &g).unwrap();
+        let bounds = engine.bounds(&g).unwrap();
+        assert_eq!(bounds.rect, [0.0, 0.0, 20.0, 10.0]);
+        let [x, y, w, h] = bounds.rect;
+        let handles = clip.handles();
+        assert_eq!(handles.len(), 8);
+        assert!(close(handles[0].1, bounds.transform.apply([x, y])));
+        assert!(close(handles[4].1, bounds.transform.apply([x + w, y + h])));
+        // Its child has no clip, and a layer that is not a group neither.
+        assert!(super::clip(&engine, &LayerPath::new(Root::Show, [0, 0])).is_none());
+    }
+
+    #[test]
+    fn a_clip_corner_dragged_moves_its_sides_and_keeps_the_radius() {
+        let engine = engine(
+            r##"{"name": "g", "type": "group", "x": 100, "y": 50, "rotation": 90, "scale": 2,
+                "clip": {"rect": [0, 0, 20, 10], "radius": 3}, "children": []}"##,
+        );
+        let clip = clip(&engine, &LayerPath::new(Root::Show, [0])).unwrap();
+        // Down the canvas is along the group's x at half the distance,
+        // left is along its y: the bottom right corner, by 10.3 down and
+        // 4 left, is 5 further right and 2 further down, whole units.
+        let dragged = clip.dragged(ClipHandle::Side([1, 1]), [80.0, 90.0], [76.0, 100.3]);
+        assert_eq!(
+            dragged,
+            Some(ClipShape::Rect {
+                rect: [0.0, 0.0, 25.0, 12.0],
+                radius: 3.0
+            })
+        );
+        // The left side past the right turns the rect round; the other
+        // axis stays.
+        let past = clip.dragged(ClipHandle::Side([-1, 0]), [100.0, 50.0], [100.0, 110.0]);
+        assert_eq!(
+            past,
+            Some(ClipShape::Rect {
+                rect: [20.0, 0.0, 10.0, 10.0],
+                radius: 3.0
+            })
+        );
+    }
+
+    #[test]
+    fn a_circle_clip_moves_by_its_centre_and_sizes_by_its_rim() {
+        let engine = engine(
+            r##"{"name": "g", "type": "group", "x": 50, "y": 50, "clip": {"circle": [0, 0, 20]}, "children": []}"##,
+        );
+        let clip = clip(&engine, &LayerPath::new(Root::Show, [0])).unwrap();
+        assert_eq!(
+            clip.handles(),
+            vec![
+                (ClipHandle::Centre, [50.0, 50.0]),
+                (ClipHandle::Rim, [70.0, 50.0])
+            ]
+        );
+        let moved = clip.dragged(ClipHandle::Centre, [50.0, 50.0], [53.4, 47.0]);
+        assert_eq!(moved, Some(ClipShape::Circle([3.0, -3.0, 20.0])));
+        // The rim's distance from the centre, whichever way it went.
+        let sized = clip.dragged(ClipHandle::Rim, [70.0, 50.0], [50.0, 80.2]);
+        assert_eq!(sized, Some(ClipShape::Circle([0.0, 0.0, 30.0])));
     }
 
     #[test]

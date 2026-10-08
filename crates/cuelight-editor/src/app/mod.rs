@@ -152,6 +152,8 @@ pub struct App {
     /// The scene whose heading was picked in the tree, while no layer
     /// is: its settings in the inspector.
     scene: Option<usize>,
+    /// How far down the tree is scrolled, and how tall its view is.
+    tree_view: (f32, f32),
     /// What was typed into the picked scene's trigger rows, by row
     /// (`None` for the row that adds one).
     triggers_typed: BTreeMap<Option<usize>, String>,
@@ -398,6 +400,8 @@ pub enum Message {
     /// A scene picked in the top bar's menu: enter it, paused.
     EnterScene(usize),
     /// A new scene after the picked one, picked.
+    /// The tree scrolled: how far down, and how tall its view is.
+    TreeScrolled(f32, f32),
     AddScene,
     /// Take the picked scene out, with its layers.
     DeleteScene,
@@ -549,6 +553,7 @@ impl App {
             rows: Vec::new(),
             selection: Vec::new(),
             scene: None,
+            tree_view: (0.0, 0.0),
             triggers_typed: BTreeMap::new(),
             expanded: None,
             unfolded_field: None,
@@ -659,7 +664,26 @@ impl App {
         {
             audio.resume();
         }
+        // What adds to the tree or moves in it brings what it picked
+        // into the tree's view.
+        let reveal = matches!(
+            message,
+            Message::AddLayer(_)
+                | Message::AddPath
+                | Message::DuplicateLayers
+                | Message::Reorder(_)
+                | Message::GroupLayers
+                | Message::Ungroup
+                | Message::MoveLayers(_)
+                | Message::AddScene
+                | Message::MoveScene(_)
+        );
         let task = self.handle(message);
+        let task = if reveal {
+            Task::batch([task, self.reveal_in_tree()])
+        } else {
+            task
+        };
         self.keep_journal();
         self.refresh_fields();
         self.refresh_bases();
@@ -876,6 +900,10 @@ impl App {
             Message::PickScene(scene) => self.pick_scene(scene),
             Message::EnterScene(scene) => self.enter_scene(scene),
             Message::AddScene => self.add_scene(),
+            Message::TreeScrolled(offset, height) => {
+                self.tree_view = (offset, height);
+                Task::none()
+            }
             Message::DeleteScene => self.delete_scene(),
             Message::MoveScene(up) => self.move_scene(up),
             Message::TypeTrigger(row, typed) => {

@@ -2,8 +2,11 @@
 
 use cuelight_editor_core::tree::Row;
 use iced::widget::Widget as _;
+use iced::widget::operation::Animation;
+use iced::widget::operation::scrollable::scroll_to;
+use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::{Column, button, column, container, row, scrollable, space, text};
-use iced::{Element, Fill};
+use iced::{Element, Fill, Task};
 
 use super::{App, Message, Tab};
 use cuelight_editor_core::session::Session;
@@ -28,7 +31,16 @@ impl App {
         column![
             container(tabs).padding([4, 8]),
             bar,
-            scrollable(body).width(Fill).height(Fill)
+            scrollable(body)
+                .id(TREE)
+                .on_scroll(|scroll| {
+                    Message::TreeScrolled(
+                        scroll.viewport.absolute_offset().y,
+                        scroll.viewport.bounds.height,
+                    )
+                })
+                .width(Fill)
+                .height(Fill)
         ]
         .width(Fill)
         .height(Fill)
@@ -107,4 +119,61 @@ impl App {
         }
         panel
     }
+
+    /// Scroll the tree just far enough that the row of what is picked
+    /// (the last layer, or the scene) is in view. Every row has a set
+    /// height, so where one is is added up rather than measured.
+    pub(super) fn reveal_in_tree(&self) -> Task<Message> {
+        // A heading: 12 px text, 6 above and below; a layer: 14 px
+        // text, 2 above and below; 2 between rows, 12 round the list.
+        const HEADING: f32 = 12.0 * 1.3 + 12.0;
+        const LAYER: f32 = 14.0 * 1.3 + 4.0;
+        const GAP: f32 = 2.0;
+        let picked = |row: &Row| match row {
+            Row::Layer { path, .. } => self.selection.last() == Some(path),
+            Row::Root {
+                root: cuelight_core::Root::Scene(i),
+                ..
+            } => self.selection.is_empty() && self.scene == Some(*i),
+            _ => false,
+        };
+        let mut top = 12.0;
+        let mut found = None;
+        for row in &self.rows {
+            let height = match row {
+                Row::Root { .. } => HEADING,
+                Row::Layer { .. } => LAYER,
+            };
+            if picked(row) {
+                found = Some((top, height));
+                break;
+            }
+            top += height + GAP;
+        }
+        let Some((top, height)) = found else {
+            return Task::none();
+        };
+        let (offset, view) = self.tree_view;
+        // Before the first scroll the view's height is not known: half
+        // a window is a safe guess.
+        let view = if view > 0.0 { view } else { 300.0 };
+        let to = if top < offset {
+            top - 12.0
+        } else if top + height > offset + view {
+            top + height - view + 12.0
+        } else {
+            return Task::none();
+        };
+        scroll_to(
+            TREE,
+            AbsoluteOffset {
+                x: 0.0,
+                y: to.max(0.0),
+            },
+            Animation::Instant,
+        )
+    }
 }
+
+/// The tree's scroll pane, for bringing a row into view.
+const TREE: &str = "tree";

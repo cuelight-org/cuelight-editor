@@ -28,8 +28,11 @@ jobs:
           repository: cuelight-org/cuelight-examples
           path: cuelight-examples
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      # The dependencies unoptimized, as the tests need no speed: a
+      # debug build optimizes them for working on the editor, which
+      # costs CI minutes of building on every run.
+      - run: cargo clippy --workspace --all-targets --config 'profile.dev.package."*".opt-level=0' -- -D warnings
+      - run: cargo test --workspace --config 'profile.dev.package."*".opt-level=0'
         env:
           CUELIGHT_EXAMPLES: ${{ github.workspace }}/cuelight-examples
       - name: The reload budget, as the release build meets it

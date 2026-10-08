@@ -2667,3 +2667,141 @@ fn a_layer_picked_in_the_tree_enters_its_scene() {
     let session = app.session.as_ref().unwrap();
     assert_eq!(session.active_scene().as_deref(), Some("page_8"));
 }
+
+/// A copy of `from`, a show folder, in a fresh folder.
+fn copy_show(from: &std::path::Path) -> tempfile::TempDir {
+    fn copy(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    copy(from, dir.path());
+    dir
+}
+
+#[test]
+fn renaming_a_trigger_renames_every_route_and_the_driver_as_one_step() {
+    use cuelight_editor_core::renames::{DRIVER, Kind};
+    let Some(deck) = examples().map(|e| e.join("demos/deck")) else {
+        eprintln!("no cuelight-examples checkout: the deck is not renamed");
+        return;
+    };
+    let dir = copy_show(&deck);
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(dir.path().into()));
+    let problems = app.summary.problems.clone();
+    let text = app.document.as_ref().unwrap().text();
+    // Where the driver has the deck at a few moments of its pass.
+    let scenes = |app: &mut App| {
+        let session = app.session.as_mut().unwrap();
+        session.set_driving(true, Instant::now());
+        [3.0, 12.0, 25.0, 40.0, 55.0, 70.0, 85.0]
+            .map(|t| {
+                session.seek(t, Instant::now());
+                session.active_scene()
+            })
+            .to_vec()
+    };
+    let played = scenes(&mut app);
+
+    let _ = app.update(Message::StartRename(Kind::Trigger, "next".into()));
+    let _ = app.update(Message::TypeRename("prev".into()));
+    let _ = app.update(Message::ProposeRename);
+    assert!(app.rename.is_none(), "prev is taken");
+    assert!(app.status.contains("uses prev already"), "{}", app.status);
+    let _ = app.update(Message::TypeRename("forward".into()));
+    let _ = app.update(Message::ProposeRename);
+    let plan = app.rename.clone().expect("a rename to ask about");
+    let in_driver = plan.uses.iter().filter(|u| u.file == DRIVER).count();
+    let routes = plan
+        .uses
+        .iter()
+        .filter(|u| u.what.contains("in scene slide_"))
+        .count();
+    assert_eq!(in_driver, 8, "every step that fires it");
+    assert_eq!(routes, 8, "every slide's route on, the last has none");
+    let mut ui = simulator(app.view());
+    let asked = format!(
+        "Rename trigger next to forward? This changes {} place(s):",
+        plan.uses.len()
+    );
+    assert!(ui.find(asked.as_str()).is_ok());
+    assert!(ui.find("key ArrowRight").is_ok());
+    drop(ui);
+
+    let _ = app.update(Message::ApplyRename);
+    assert!(
+        app.status.starts_with("renamed trigger next to forward"),
+        "{}",
+        app.status
+    );
+    assert!(app.inputs.triggers.contains("forward"));
+    assert!(!app.inputs.triggers.contains("next"));
+    assert_eq!(app.summary.problems, problems, "nothing new to say");
+    assert_eq!(scenes(&mut app), played, "the deck plays through as before");
+    let document = app.document.as_ref().unwrap();
+    assert_eq!(document.steps().len(), 1, "one step");
+    assert!(!document.file(DRIVER).unwrap().contains("\"next\""));
+
+    // Saved, the show opens again with its driver renamed.
+    let _ = app.update(Message::Save);
+    let again = Opened::from_path(dir.path()).unwrap();
+    assert_eq!(again.summary.problems, problems);
+    assert!(
+        std::fs::read_to_string(dir.path().join(DRIVER))
+            .unwrap()
+            .contains("{\"trigger\": \"forward\"}")
+    );
+
+    // One undo takes back the show and the driver.
+    let _ = app.update(Message::Undo);
+    let document = app.document.as_ref().unwrap();
+    assert_eq!(document.text(), text);
+    assert!(document.file(DRIVER).unwrap().contains("\"next\""));
+    assert_eq!(scenes(&mut app), played);
+}
+
+#[test]
+fn renaming_a_variables_row_renames_it_wherever_it_is_read() {
+    use cuelight_editor_core::lists::List;
+    let (mut app, _dir) = open_copy();
+    let _ = app.update(Message::TypeListName(
+        List::Variables,
+        Some("lit".into()),
+        "on".into(),
+    ));
+    let _ = app.update(Message::ApplyList(List::Variables, Some("lit".into())));
+    let plan = app.rename.clone().expect("asked first");
+    assert_eq!(plan.from, "lit");
+    assert_eq!(
+        app.document.as_ref().unwrap().value()["variables"]["lit"],
+        false,
+        "nothing changed yet"
+    );
+    let _ = app.update(Message::ApplyRename);
+    let show = app.document.as_ref().unwrap().value();
+    assert_eq!(show["variables"]["on"], false);
+    assert_eq!(
+        show["layers"][1]["children"][0]["bindings"][0]["variable"],
+        "on"
+    );
+    assert!(app.inputs.variables.contains_key("on"));
+    // Cancelled, nothing is asked any more.
+    let _ = app.update(Message::StartRename(
+        cuelight_editor_core::renames::Kind::Variable,
+        "on".into(),
+    ));
+    let _ = app.update(Message::TypeRename("off".into()));
+    let _ = app.update(Message::ProposeRename);
+    assert!(app.rename.is_some());
+    let _ = app.update(Message::CancelRename);
+    assert!(app.rename.is_none() && app.renaming.is_none());
+}

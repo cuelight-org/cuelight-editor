@@ -2,8 +2,9 @@
 //!
 //! The document is written as [`Document::text`] has it: untouched nodes
 //! exactly as read, so a show saved without edits is the same file, and
-//! an edit changes the lines it touched. Every other file the show
-//! shipped goes back as it was opened.
+//! an edit changes the lines it touched. The other files the edits
+//! touched (the driver, after a rename) go back as they say now, and
+//! every other file the show shipped as it was opened.
 //!
 //! A folder gets its `show.json` rewritten, a pack is packed again, a
 //! loose document is written in place. A show that came as bytes (a
@@ -60,12 +61,16 @@ impl fmt::Display for SaveError {
 
 impl std::error::Error for SaveError {}
 
-/// The show's files with the document as it stands now.
+/// The show's files with the document, and the other files it edited,
+/// as they stand now.
 pub fn files_with(
     files: &BTreeMap<String, Vec<u8>>,
     document: &Document,
 ) -> BTreeMap<String, Vec<u8>> {
     let mut files = files.clone();
+    for (name, text) in document.files() {
+        files.insert(name.clone(), text.clone().into_bytes());
+    }
     files.insert("show.json".to_owned(), document.text().into_bytes());
     files
 }
@@ -80,8 +85,19 @@ pub fn save(
 ) -> Result<(), SaveError> {
     check_format(document)?;
     let text = document.text().into_bytes();
+    let others: Vec<(String, Vec<u8>)> = document
+        .files()
+        .iter()
+        .map(|(name, text)| (name.clone(), text.clone().into_bytes()))
+        .filter(|(name, bytes)| files.get(name) != Some(bytes))
+        .collect();
     match origin {
-        Origin::Folder(dir) => write(&dir.join("show.json"), &text)?,
+        Origin::Folder(dir) => {
+            for (name, bytes) in &others {
+                write(&dir.join(name), bytes)?;
+            }
+            write(&dir.join("show.json"), &text)?;
+        }
         Origin::Pack(path) => {
             let bytes = cuelight_loader::pack_bytes(&files_with(files, document))
                 .map_err(|e| SaveError::Write(e.to_string()))?;
@@ -89,6 +105,10 @@ pub fn save(
         }
         Origin::Loose(path) => write(path, &text)?,
         Origin::Bytes { .. } => return Err(SaveError::NoPlace),
+    }
+    // A loose document has nowhere for its other files to go.
+    if !matches!(origin, Origin::Loose(_)) {
+        files.extend(others);
     }
     files.insert("show.json".to_owned(), text);
     document.mark_saved();

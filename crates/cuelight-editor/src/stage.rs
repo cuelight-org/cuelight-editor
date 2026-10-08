@@ -449,6 +449,10 @@ impl<Message> shader::Program<Message> for Stage<Message> {
                         Action::publish((self.on_grab)(holding.grip, holding.canvas)).and_capture(),
                     );
                 }
+                // The same place again is no move: nothing to say.
+                if canvas == holding.last {
+                    return Some(Action::capture());
+                }
                 holding.last = canvas;
                 Some(Action::publish((self.on_drag)(canvas, held(state.modifiers))).and_capture())
             }

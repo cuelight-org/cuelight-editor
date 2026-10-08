@@ -189,6 +189,10 @@ pub struct App {
     /// The scale that fits the show into the stage area, as the last
     /// layout found it: what zooming in or out starts from while fitted.
     fitted: Cell<f32>,
+    /// The picked layer's JSON as it was when a drag began: the inspector
+    /// shows it until the drag lets go, rather than laying the text out
+    /// again on every frame.
+    held_json: std::cell::RefCell<Option<String>>,
     /// Whether the log below the stage is unfolded, or just its header.
     log_open: bool,
     /// Whether the playhead counts from when the active scene was
@@ -625,6 +629,7 @@ impl App {
             strip_frames: "8".to_owned(),
             strip_seconds: "1".to_owned(),
             fitted: Cell::new(1.0),
+            held_json: std::cell::RefCell::new(None),
             log_open: true,
             follow_scene: false,
         };
@@ -682,6 +687,15 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // The pointer moving in a drag only says where it is; the next
+        // frame writes it. Nothing else has changed to refresh, nor on a
+        // frame that waits to write.
+        if let Message::Drag(at, held) = message {
+            return self.drag(at, held);
+        }
+        if matches!(message, Message::DragApply) && self.drag_waits() {
+            return Task::none();
+        }
         // A browser keeps a page silent until someone acts on it; any
         // message but a frame is such an act.
         #[cfg(target_arch = "wasm32")]

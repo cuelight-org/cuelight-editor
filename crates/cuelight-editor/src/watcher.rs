@@ -5,35 +5,55 @@
 //! differ from what the editor holds, is for the app to tell.
 
 use std::path::PathBuf;
+use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
 use iced::futures::channel::mpsc;
 use iced::futures::{Stream, StreamExt};
-use notify_debouncer_mini::{DebounceEventResult, new_debouncer, notify::RecursiveMode};
+use notify_debouncer_mini::notify::{self, EventKind, RecursiveMode, Watcher as _};
 
 /// How long the files have to stay still before a burst is reported.
 const QUIET: Duration = Duration::from_millis(150);
 
 /// The bursts of changed paths under `at`, under its folders too when
 /// the flag says so. A folder that cannot be watched gives nothing.
+///
+/// A file only read is no change: the editor reads the show's files to
+/// tell whether they changed, and that read must not look like one.
 pub fn watch((at, under): &(PathBuf, bool)) -> impl Stream<Item = Vec<PathBuf>> + use<> {
     let (sender, receiver) = mpsc::unbounded();
-    let debouncer = new_debouncer(QUIET, move |result: DebounceEventResult| match result {
-        Ok(events) if !events.is_empty() => {
-            let _ = sender.unbounded_send(events.into_iter().map(|e| e.path).collect());
+    let (events, burst) = std_mpsc::channel::<Vec<PathBuf>>();
+    let watcher =
+        notify::recommended_watcher(move |result: notify::Result<notify::Event>| match result {
+            Ok(event) if !matches!(event.kind, EventKind::Access(_)) => {
+                let _ = events.send(event.paths);
+            }
+            Ok(_) => {}
+            Err(error) => log::warn!("watching the show: {error}"),
+        });
+    // Gather the paths until the files stay still for a while, then send
+    // them as one burst. The thread ends with the watch.
+    std::thread::spawn(move || {
+        while let Ok(mut paths) = burst.recv() {
+            while let Ok(more) = burst.recv_timeout(QUIET) {
+                paths.extend(more);
+            }
+            paths.sort();
+            paths.dedup();
+            if sender.unbounded_send(paths).is_err() {
+                break;
+            }
         }
-        Ok(_) => {}
-        Err(error) => log::warn!("watching the show: {error}"),
     });
-    let debouncer = match debouncer {
-        Ok(mut debouncer) => {
+    let watcher = match watcher {
+        Ok(mut watcher) => {
             let mode = if *under {
                 RecursiveMode::Recursive
             } else {
                 RecursiveMode::NonRecursive
             };
-            match debouncer.watcher().watch(at, mode) {
-                Ok(()) => Some(debouncer),
+            match watcher.watch(at, mode) {
+                Ok(()) => Some(watcher),
                 Err(error) => {
                     log::warn!("cannot watch {}: {error}", at.display());
                     None
@@ -47,7 +67,7 @@ pub fn watch((at, under): &(PathBuf, bool)) -> impl Stream<Item = Vec<PathBuf>> 
     };
     // The stream owns the watch: it stops when the subscription does.
     receiver.map(move |paths| {
-        let _watching = &debouncer;
+        let _watching = &watcher;
         paths
     })
 }

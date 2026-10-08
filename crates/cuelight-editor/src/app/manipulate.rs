@@ -8,6 +8,7 @@ use cuelight::Engine;
 use cuelight_editor_core::edit;
 use cuelight_editor_core::placement::{self, Lines, Placement};
 use serde_json::Value as Json;
+use std::time::Duration;
 
 /// How near a line a moving box snaps to it, in logical pixels.
 const SNAP: f64 = 6.0;
@@ -38,7 +39,13 @@ pub(super) struct Grab {
     applied: Vec<Edit>,
     /// The lines it lines up with now, which the stage draws.
     pub guides: [Option<f64>; 2],
+    /// When it last wrote, and how long writing and reloading took.
+    written: Option<(Instant, Duration)>,
 }
+
+/// The least time between two writes of a drag: what a screen of any
+/// rate gets is about 30 a second.
+const WRITE_EVERY: Duration = Duration::from_millis(33);
 
 /// The properties a grip changes.
 fn properties(grip: Grip) -> &'static [Property] {
@@ -190,6 +197,7 @@ impl App {
             start: Vec::new(),
             applied: Vec::new(),
             guides: [None, None],
+            written: None,
         };
         // Where it starts, unsnapped: what a drag that changed nothing
         // ends on.
@@ -229,7 +237,32 @@ impl App {
     /// A frame while dragging: write where the pointer has the layers
     /// now, if that is not what was written last. The audit waits for the
     /// drag to end; a drag on what something else owns writes nothing.
+    ///
+    /// A write reloads the show, so it waits a while after the last: at
+    /// least [`WRITE_EVERY`], and at least as long as that one took, so
+    /// a heavy show keeps up with the pointer by writing less often.
     pub(super) fn drag_apply(&mut self) -> Task<Message> {
+        if self.drag_waits() {
+            return Task::none();
+        }
+        self.drag_write()
+    }
+
+    /// Whether a drag's next write has to wait: no drag, or too soon
+    /// after the last.
+    pub(super) fn drag_waits(&self) -> bool {
+        match &self.grab {
+            None => true,
+            Some(grab) => grab
+                .written
+                .is_some_and(|(at, took)| at.elapsed() < took.max(WRITE_EVERY)),
+        }
+    }
+
+    /// Write where the pointer has the layers now, if that is not what
+    /// was written last.
+    fn drag_write(&mut self) -> Task<Message> {
+        let began = Instant::now();
         let Some(grab) = &mut self.grab else {
             return Task::none();
         };
@@ -241,6 +274,9 @@ impl App {
         grab.applied = edits.clone();
         if grab.owner.is_none() {
             self.write_all(&edits, false);
+            if let Some(grab) = &mut self.grab {
+                grab.written = Some((began, began.elapsed()));
+            }
         }
         Task::none()
     }
@@ -248,7 +284,8 @@ impl App {
     /// The drag let go: where it ends is where the layers stay, in one
     /// undo step; or the inspector asks, when something owns them.
     pub(super) fn release(&mut self) -> Task<Message> {
-        let _ = self.drag_apply();
+        // Where it is let go is written, however soon after the last.
+        let _ = self.drag_write();
         let Some(grab) = self.grab.take() else {
             return Task::none();
         };

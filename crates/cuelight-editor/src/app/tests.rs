@@ -2314,17 +2314,14 @@ fn click(app: &mut App, label: &str) {
 #[test]
 fn a_scene_heading_shows_the_scene_and_enters_it() {
     let (mut app, _dir) = open_with_assets(SCENES);
+    let active = |app: &App| app.session.as_ref().unwrap().active_scene();
     click(&mut app, "SCENE game");
     assert_eq!(app.scene, Some(1));
-    let active = || app.session.as_ref().unwrap().active_scene();
-    assert_eq!(active().as_deref(), Some("game"));
+    assert_eq!(active(&app).as_deref(), Some("game"));
     // The heading of the active scene is starred; the picked one is the
     // inspector's.
     click(&mut app, "SCENE attract");
-    assert_eq!(
-        app.session.as_ref().unwrap().active_scene().as_deref(),
-        Some("attract")
-    );
+    assert_eq!(active(&app).as_deref(), Some("attract"));
     let mut ui = simulator(app.view());
     for said in [
         "TRIGGERS",
@@ -2356,8 +2353,14 @@ fn a_scene_heading_shows_the_scene_and_enters_it() {
         Row::Layer { path, name, .. } if name == "dot" => Some(path.clone()),
         _ => None,
     });
-    let _ = app.update(Message::Choose(dot.unwrap()));
+    let dot = dot.unwrap();
+    let _ = app.update(Message::Choose(dot.clone()));
     assert_eq!(app.scene, None);
+    // A layer picked in the tree enters its scene too.
+    let _ = app.update(Message::EnterScene(1));
+    assert_eq!(active(&app).as_deref(), Some("game"));
+    let _ = app.update(Message::Choose(dot));
+    assert_eq!(active(&app).as_deref(), Some("attract"));
     click(&mut app, "SCENE over");
     click(&mut app, "SHOW");
     assert_eq!(app.scene, None);
@@ -2536,4 +2539,131 @@ fn red_riding_hoods_pages_are_reordered_and_entered_from_the_menu() {
         app.session.as_ref().unwrap().active_scene().as_deref(),
         Some(second.name.as_str())
     );
+}
+
+#[test]
+fn a_folded_group_hides_its_layers_until_one_is_added_inside() {
+    let (mut app, _dir) = open_copy();
+    let hidden = |app: &App, name: &str| {
+        app.rows
+            .iter()
+            .zip(app.tree_lines())
+            .find(|(row, _)| matches!(row, Row::Layer { name: n, .. } if n == name))
+            .map(|(_, line)| line.hidden)
+            .unwrap()
+    };
+    let group = app
+        .rows
+        .iter()
+        .zip(app.tree_lines())
+        .find(|(row, _)| matches!(row, Row::Layer { kind: "group", .. }))
+        .map(|(_, line)| line.key.clone())
+        .expect("the fixture has a group");
+    let child = app
+        .rows
+        .iter()
+        .find_map(|row| match row {
+            Row::Layer {
+                path,
+                name,
+                depth: 1,
+                ..
+            } => Some((path.clone(), name.clone())),
+            _ => None,
+        })
+        .expect("the group has a child");
+    assert!(!hidden(&app, &child.1));
+    let _ = app.update(Message::ToggleFold(group.clone()));
+    assert!(hidden(&app, &child.1), "folded away");
+    {
+        let mut ui = simulator(app.view());
+        assert!(ui.find(child.1.as_str()).is_err());
+    }
+    // Duplicating the child (picked from the inspector's uses, say)
+    // unfolds the group so the copy shows.
+    let _ = app.update(Message::Choose(child.0));
+    let _ = app.update(Message::DuplicateLayers);
+    assert!(!hidden(&app, &child.1));
+}
+
+#[test]
+fn only_the_active_scene_opens_unfolded_and_a_fold_marks_what_it_hides() {
+    let Some(scenes) = examples().map(|e| e.join("features/scenes/scenes")) else {
+        eprintln!("no cuelight-examples checkout: folding is not tried");
+        return;
+    };
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(scenes));
+    let active = app
+        .session
+        .as_ref()
+        .unwrap()
+        .active_scene()
+        .expect("a scene is active");
+    let headings: Vec<(String, bool)> = app
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Root {
+                root: cuelight_core::Root::Scene(_),
+                name,
+            } => Some((name.clone(), app.folded.contains(&format!("scene {name}")))),
+            _ => None,
+        })
+        .collect();
+    assert!(headings.len() > 1);
+    for (name, folded) in &headings {
+        assert_eq!(*folded, *name != active, "{name}");
+    }
+    // A layer of the active scene picked, then its scene folded: the
+    // pick stays, and the heading says it holds it.
+    let picked = app.rows.iter().find_map(|row| match row {
+        Row::Layer { path, .. } if matches!(path.root, cuelight_core::Root::Scene(_)) => {
+            Some(path.clone())
+        }
+        _ => None,
+    });
+    let picked = picked.expect("the active scene has a layer");
+    let cuelight_core::Root::Scene(scene) = picked.root else {
+        panic!("a scene's layer");
+    };
+    let name = app
+        .rows
+        .iter()
+        .find_map(|row| match row {
+            Row::Root {
+                root: cuelight_core::Root::Scene(i),
+                name,
+            } if *i == scene => Some(name.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let _ = app.update(Message::Choose(picked.clone()));
+    let key = format!("scene {name}");
+    app.folded.remove(&key);
+    let _ = app.update(Message::ToggleFold(key.clone()));
+    assert_eq!(app.selection, [picked]);
+    let marked = app
+        .tree_lines()
+        .into_iter()
+        .find(|line| line.key == key)
+        .unwrap();
+    assert!(marked.holds_picked);
+}
+
+#[test]
+fn a_layer_picked_in_the_tree_enters_its_scene() {
+    let Some(book) = examples().map(|e| e.join("demos/red_riding_hood")) else {
+        eprintln!("no cuelight-examples checkout: picking into a scene is not tried");
+        return;
+    };
+    let (mut app, _) = App::new();
+    let _ = app.update(Message::Dropped(book));
+    let the_end = app.rows.iter().find_map(|row| match row {
+        Row::Layer { path, name, .. } if name == "the_end" => Some(path.clone()),
+        _ => None,
+    });
+    let _ = app.update(Message::Choose(the_end.expect("the book ends")));
+    let session = app.session.as_ref().unwrap();
+    assert_eq!(session.active_scene().as_deref(), Some("page_8"));
 }

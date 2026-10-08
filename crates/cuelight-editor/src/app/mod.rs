@@ -154,6 +154,11 @@ pub struct App {
     scene: Option<usize>,
     /// How far down the tree is scrolled, and how tall its view is.
     tree_view: (f32, f32),
+    /// The tree's headings and groups folded, by their keys.
+    folded: BTreeSet<String>,
+    /// The scene active when the tree last looked: a scene that becomes
+    /// active unfolds.
+    active_seen: Option<String>,
     /// What was typed into the picked scene's trigger rows, by row
     /// (`None` for the row that adds one).
     triggers_typed: BTreeMap<Option<usize>, String>,
@@ -402,6 +407,8 @@ pub enum Message {
     /// A new scene after the picked one, picked.
     /// The tree scrolled: how far down, and how tall its view is.
     TreeScrolled(f32, f32),
+    /// A heading or group folded or unfolded, by its key.
+    ToggleFold(String),
     AddScene,
     /// Take the picked scene out, with its layers.
     DeleteScene,
@@ -554,6 +561,8 @@ impl App {
             selection: Vec::new(),
             scene: None,
             tree_view: (0.0, 0.0),
+            folded: BTreeSet::new(),
+            active_seen: None,
             triggers_typed: BTreeMap::new(),
             expanded: None,
             unfolded_field: None,
@@ -678,7 +687,28 @@ impl App {
                 | Message::AddScene
                 | Message::MoveScene(_)
         );
+        let picked_on_stage = matches!(message, Message::Pick(..));
+        let picked_in_tree = matches!(message, Message::Choose(_));
         let task = self.handle(message);
+        // A layer picked in the tree, or added, shows on the stage: its
+        // scene is entered.
+        let task = if reveal || picked_in_tree {
+            Task::batch([task, self.enter_picked_scene()])
+        } else {
+            task
+        };
+        // A layer picked on the stage, or one just added or moved, is
+        // never left inside something folded.
+        if reveal || picked_on_stage {
+            self.unfold_to_picked();
+        }
+        let active = self.session.as_ref().and_then(Session::active_scene);
+        if active != self.active_seen {
+            if let Some(name) = &active {
+                self.folded.remove(&format!("scene {name}"));
+            }
+            self.active_seen = active;
+        }
         let task = if reveal {
             Task::batch([task, self.reveal_in_tree()])
         } else {
@@ -900,6 +930,12 @@ impl App {
             Message::PickScene(scene) => self.pick_scene(scene),
             Message::EnterScene(scene) => self.enter_scene(scene),
             Message::AddScene => self.add_scene(),
+            Message::ToggleFold(key) => {
+                if !self.folded.remove(&key) {
+                    self.folded.insert(key);
+                }
+                Task::none()
+            }
             Message::TreeScrolled(offset, height) => {
                 self.tree_view = (offset, height);
                 Task::none()
@@ -1386,6 +1422,21 @@ impl App {
                 self.preview = None;
                 self.selected = None;
                 self.rows = engine.show().map(tree::rows).unwrap_or_default();
+                // A show opens with only what is on screen unfolded.
+                self.folded = self
+                    .rows
+                    .iter()
+                    .filter_map(|row| match row {
+                        Row::Root {
+                            root: cuelight_core::Root::Scene(_),
+                            name,
+                        } if engine.active_scene() != Some(name.as_str()) => {
+                            Some(format!("scene {name}"))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                self.active_seen = engine.active_scene().map(str::to_owned);
                 self.follow_scene = false;
                 self.selection.clear();
                 self.scene = None;

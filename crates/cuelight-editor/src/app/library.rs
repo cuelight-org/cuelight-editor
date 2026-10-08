@@ -54,7 +54,12 @@ impl App {
     fn tree_panel<'a>(&'a self, session: &'a Session) -> Column<Element<'a, Message>> {
         let mut panel = Column::new().spacing(2).padding(12);
         let active = session.active_scene();
-        for row_ in &self.rows {
+        let lines = self.tree_lines();
+        for (row_, line) in self.rows.iter().zip(&lines) {
+            if line.hidden {
+                continue;
+            }
+            let fold = self.fold_toggle(line);
             match row_ {
                 Row::Root {
                     root: cuelight_core::Root::Show,
@@ -70,7 +75,7 @@ impl App {
                     if self.selection.is_empty() && self.scene.is_none() {
                         b = b.style(button::secondary);
                     }
-                    panel = panel.push(b.boxed());
+                    panel = panel.push(row![fold, b].align_y(iced::Center).height(HEADING).boxed());
                 }
                 // A scene's heading picks the scene and enters it.
                 Row::Root {
@@ -90,7 +95,7 @@ impl App {
                     if self.selection.is_empty() && self.scene == Some(*i) {
                         b = b.style(button::secondary);
                     }
-                    panel = panel.push(b.boxed());
+                    panel = panel.push(row![fold, b].align_y(iced::Center).height(HEADING).boxed());
                 }
                 Row::Layer {
                     path,
@@ -98,13 +103,9 @@ impl App {
                     kind,
                     depth,
                 } => {
-                    let line = row![
-                        space::horizontal().width(*depth as f32 * 14.0),
-                        text(*kind).size(11).width(44),
-                        text(name).size(14),
-                    ]
-                    .spacing(6)
-                    .align_y(iced::Center);
+                    let line = row![text(*kind).size(11).width(44), text(name).size(14),]
+                        .spacing(6)
+                        .align_y(iced::Center);
                     let mut b = button(line)
                         .on_press(Message::Choose(path.clone()))
                         .width(Fill)
@@ -113,7 +114,12 @@ impl App {
                     if self.selection.contains(path) {
                         b = b.style(button::secondary);
                     }
-                    panel = panel.push(b.boxed());
+                    panel = panel.push(
+                        row![space::horizontal().width(*depth as f32 * 14.0), fold, b]
+                            .align_y(iced::Center)
+                            .height(LAYER)
+                            .boxed(),
+                    );
                 }
             }
         }
@@ -124,10 +130,7 @@ impl App {
     /// (the last layer, or the scene) is in view. Every row has a set
     /// height, so where one is is added up rather than measured.
     pub(super) fn reveal_in_tree(&self) -> Task<Message> {
-        // A heading: 12 px text, 6 above and below; a layer: 14 px
-        // text, 2 above and below; 2 between rows, 12 round the list.
-        const HEADING: f32 = 12.0 * 1.3 + 12.0;
-        const LAYER: f32 = 14.0 * 1.3 + 4.0;
+        // 2 between rows, 12 round the list.
         const GAP: f32 = 2.0;
         let picked = |row: &Row| match row {
             Row::Layer { path, .. } => self.selection.last() == Some(path),
@@ -139,7 +142,11 @@ impl App {
         };
         let mut top = 12.0;
         let mut found = None;
-        for row in &self.rows {
+        let lines = self.tree_lines();
+        for (row, line) in self.rows.iter().zip(&lines) {
+            if line.hidden {
+                continue;
+            }
             let height = match row {
                 Row::Root { .. } => HEADING,
                 Row::Layer { .. } => LAYER,
@@ -153,17 +160,14 @@ impl App {
         let Some((top, height)) = found else {
             return Task::none();
         };
+        // Out of view, the row goes to the top of it. Until the tree has
+        // scrolled once its view's height is not known, and the row is
+        // taken to be out of view.
         let (offset, view) = self.tree_view;
-        // Before the first scroll the view's height is not known: half
-        // a window is a safe guess.
-        let view = if view > 0.0 { view } else { 300.0 };
-        let to = if top < offset {
-            top - 12.0
-        } else if top + height > offset + view {
-            top + height - view + 12.0
-        } else {
+        if top >= offset && view > 0.0 && top + height <= offset + view {
             return Task::none();
-        };
+        }
+        let to = top - 12.0;
         scroll_to(
             TREE,
             AbsoluteOffset {
@@ -177,3 +181,136 @@ impl App {
 
 /// The tree's scroll pane, for bringing a row into view.
 const TREE: &str = "tree";
+
+/// How tall a heading's row is in the tree, and a layer's: set, so
+/// where a row is can be added up.
+const HEADING: f32 = 30.0;
+const LAYER: f32 = 25.0;
+
+/// A row of the tree as folding sees it.
+pub(super) struct TreeLine {
+    /// What the row is folded by: its heading's or group's names, which
+    /// a reorder does not change.
+    pub key: String,
+    /// Under a heading or a group that is folded.
+    pub hidden: bool,
+    /// Rows sit under it, so it can fold.
+    pub parent: bool,
+    /// Folded, with something picked inside it.
+    pub holds_picked: bool,
+}
+
+impl App {
+    /// Every row's fold key, whether it is folded away and whether it
+    /// folds, in the order of the rows.
+    pub(super) fn tree_lines(&self) -> Vec<TreeLine> {
+        let mut out: Vec<TreeLine> = Vec::with_capacity(self.rows.len());
+        // The heading's key, then each enclosing layer's, by depth.
+        let mut root = String::new();
+        let mut above: Vec<String> = Vec::new();
+        for (i, row) in self.rows.iter().enumerate() {
+            let next = self.rows.get(i + 1);
+            let (key, hidden, parent) = match row {
+                Row::Root { root: r, name } => {
+                    root = match r {
+                        cuelight_core::Root::Show => "show".to_owned(),
+                        cuelight_core::Root::Scene(_) => format!("scene {name}"),
+                    };
+                    above.clear();
+                    (root.clone(), false, matches!(next, Some(Row::Layer { .. })))
+                }
+                Row::Layer { name, depth, .. } => {
+                    above.truncate(*depth);
+                    let hidden = self.folded.contains(&root)
+                        || above.iter().any(|key| self.folded.contains(key));
+                    let key = format!("{}/{name}", above.last().unwrap_or(&root));
+                    let parent = matches!(next, Some(Row::Layer { depth: d, .. }) if d > depth);
+                    above.push(key.clone());
+                    (key, hidden, parent)
+                }
+            };
+            out.push(TreeLine {
+                key,
+                hidden,
+                parent,
+                holds_picked: false,
+            });
+        }
+        // A picked layer folded away marks the row that hides it: the
+        // first one up from it that shows.
+        for (i, row) in self.rows.iter().enumerate() {
+            let Row::Layer { path, depth, .. } = row else {
+                continue;
+            };
+            if !self.selection.contains(path) || !out.get(i).is_some_and(|l| l.hidden) {
+                continue;
+            }
+            let holder = (0..i).rev().find(|j| {
+                let shows = out.get(*j).is_some_and(|l| !l.hidden);
+                let above = match self.rows.get(*j) {
+                    Some(Row::Layer { depth: d, .. }) => d < depth,
+                    Some(Row::Root { .. }) => true,
+                    None => false,
+                };
+                shows && above
+            });
+            if let Some(line) = holder.and_then(|j| out.get_mut(j)) {
+                line.holds_picked = true;
+            }
+        }
+        out
+    }
+
+    /// The toggle that folds a row, or room for one where nothing sits
+    /// under it.
+    fn fold_toggle<'a>(&self, line: &TreeLine) -> Element<'a, Message> {
+        if !line.parent {
+            return space::horizontal().width(16).boxed();
+        }
+        let folded = self.folded.contains(&line.key);
+        let holds = line.holds_picked;
+        button(text(if folded { "+" } else { "-" }).size(12))
+            .on_press(Message::ToggleFold(line.key.clone()))
+            .width(16)
+            .padding([2, 0])
+            .style(move |theme: &iced::Theme, status| {
+                let mut style = button::text(theme, status);
+                // What is picked is folded away in here.
+                if holds {
+                    style.text_color = theme.palette().primary.base.color;
+                }
+                style
+            })
+            .boxed()
+    }
+
+    /// Unfold whatever hides the picked layer or scene, so the tree
+    /// shows it.
+    pub(super) fn unfold_to_picked(&mut self) {
+        let lines = self.tree_lines();
+        let Some(at) = self.rows.iter().position(|row| match row {
+            Row::Layer { path, .. } => self.selection.last() == Some(path),
+            _ => false,
+        }) else {
+            return;
+        };
+        // Every row above it in the tree that holds it.
+        let Some(Row::Layer { depth, .. }) = self.rows.get(at) else {
+            return;
+        };
+        let mut depth = *depth;
+        for (row, line) in self.rows.iter().zip(&lines).take(at).rev() {
+            match row {
+                Row::Layer { depth: d, .. } if *d < depth => {
+                    self.folded.remove(&line.key);
+                    depth = *d;
+                }
+                Row::Root { .. } => {
+                    self.folded.remove(&line.key);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+}

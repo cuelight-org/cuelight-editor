@@ -60,6 +60,23 @@ impl App {
         self.enter_scene(index)
     }
 
+    /// Enter the scene of the last layer picked, when it is not the one
+    /// playing.
+    pub(super) fn enter_picked_scene(&mut self) -> Task<Message> {
+        let Some(Root::Scene(index)) = self.selection.last().map(|path| path.root) else {
+            return Task::none();
+        };
+        let playing = self.session.as_ref().and_then(Session::active_scene);
+        let name = self
+            .document
+            .as_ref()
+            .and_then(|d| scenes::names(d).into_iter().nth(index));
+        if name.is_none() || name == playing {
+            return Task::none();
+        }
+        self.enter_scene(index)
+    }
+
     /// Enter the scene at `index`, paused where the playhead is.
     pub(super) fn enter_scene(&mut self, index: usize) -> Task<Message> {
         let Some(session) = &mut self.session else {

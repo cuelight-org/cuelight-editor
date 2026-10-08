@@ -30,6 +30,9 @@ png = "0.18"
 cuelight-audio = { workspace = true, features = ["live"] }
 # Watching the open show's files for changes made outside the editor.
 notify-debouncer-mini = "0.7"
+# The window's icon, drawn from the logo; the same as iced's SVG widget
+# uses.
+resvg = "0.48"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Sound through the browser's WebAudio.

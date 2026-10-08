@@ -26,6 +26,38 @@ pub fn main() -> iced::Result {
         // Closing with unsaved edits asks first.
         .exit_on_close_request(false)
         .subscription(App::subscription)
-        .window_size((1100.0, 700.0))
+        .window(iced::window::Settings {
+            size: iced::Size::new(1100.0, 700.0),
+            #[cfg(not(target_arch = "wasm32"))]
+            icon: window_icon(),
+            ..iced::window::Settings::default()
+        })
         .run()
+}
+
+/// The logo, the same as the web page's icon, drawn for the window.
+#[cfg(not(target_arch = "wasm32"))]
+fn window_icon() -> Option<iced::window::Icon> {
+    use resvg::{tiny_skia, usvg};
+    const SIDE: u32 = 64;
+    let logo = include_bytes!("../../../web/favicon.svg");
+    let tree = usvg::Tree::from_data(logo, &usvg::Options::default()).ok()?;
+    let mut pixmap = tiny_skia::Pixmap::new(SIDE, SIDE)?;
+    let scale = SIDE as f32 / tree.size().width();
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    // The logo is opaque throughout, so its premultiplied pixels are
+    // the plain ones the icon takes.
+    iced::window::icon::from_rgba(pixmap.take(), SIDE, SIDE).ok()
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    #[test]
+    fn the_logo_draws_as_the_window_icon() {
+        assert!(super::window_icon().is_some());
+    }
 }

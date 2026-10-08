@@ -86,34 +86,59 @@ impl Placement {
         Some(linear(self.parent).invert()?.apply(by))
     }
 
-    /// A distance on the canvas along the layer's own axes, turned with
-    /// it but not scaled: what its `scale_x` and `scale_y` stretch.
-    fn in_own(&self, by: [f64; 2]) -> Option<[f64; 2]> {
-        let turned = linear(self.parent).then(Transform::rotate(self.rotation));
-        Some(turned.invert()?.apply(by))
-    }
-
     /// The `scale_x` and `scale_y` that take the point `from` of the
-    /// layer to `to`, both on the canvas, scaling round its pivot. With
-    /// `keep`, both by the same factor, so the layer keeps its
-    /// proportions. An axis the drag does not reach (the point was on it)
-    /// keeps its scale.
-    pub fn scaled(&self, from: [f64; 2], to: [f64; 2], keep: bool) -> Option<[f64; 2]> {
-        let [px, py] = self.pivot();
-        let [fx, fy] = self.in_own([from[0] - px, from[1] - py])?;
-        let [tx, ty] = self.in_own([to[0] - px, to[1] - py])?;
-        // Too near the pivot to say how far it went.
+    /// layer to `to`, and the `x` and `y` that keep the point `opposite`
+    /// where it is, all on the canvas: a corner dragged with the corner
+    /// across from it pinned. With `keep`, both axes by the same factor,
+    /// so the layer keeps its proportions. An axis the drag does not
+    /// reach (`from` level with `opposite` on it) keeps its scale. The
+    /// scales are to 3 decimals, and the place follows the rounded scales,
+    /// so the pinned corner stays put. `None` in a group scaled flat, or
+    /// for a layer scaled flat.
+    pub fn scaled_about(
+        &self,
+        opposite: [f64; 2],
+        from: [f64; 2],
+        to: [f64; 2],
+        keep: bool,
+    ) -> Option<([f64; 2], [f64; 2])> {
+        // Along the layer's own axes, turned with it but not scaled.
+        let own = linear(self.parent).then(Transform::rotate(self.rotation));
+        let back = own.invert()?;
+        let [fx, fy] = back.apply([from[0] - opposite[0], from[1] - opposite[1]]);
+        let [tx, ty] = back.apply([to[0] - opposite[0], to[1] - opposite[1]]);
+        // Too near the pinned corner to say how far it went.
         const NEAR: f64 = 1e-6;
-        if keep {
+        let factor = if keep {
             let along = fx * fx + fy * fy;
             if along < NEAR {
                 return None;
             }
-            let factor = (tx * fx + ty * fy) / along;
-            return Some([self.scale_x * factor, self.scale_y * factor]);
+            let k = (tx * fx + ty * fy) / along;
+            [k, k]
+        } else {
+            let factor = |from: f64, to: f64| if from.abs() < NEAR { 1.0 } else { to / from };
+            [factor(fx, tx), factor(fy, ty)]
+        };
+        let round = |v: f64| (v * 1000.0).round() / 1000.0 + 0.0;
+        let scales = [
+            round(self.scale_x * factor[0]),
+            round(self.scale_y * factor[1]),
+        ];
+        if self.scale_x.abs() < NEAR || self.scale_y.abs() < NEAR {
+            return None;
         }
-        let factor = |from: f64, to: f64| if from.abs() < NEAR { 1.0 } else { to / from };
-        Some([self.scale_x * factor(fx, tx), self.scale_y * factor(fy, ty)])
+        let factor = [scales[0] / self.scale_x, scales[1] / self.scale_y];
+        // From the pinned corner to the pivot, stretched as the layer is,
+        // gives where the pivot goes.
+        let [px, py] = self.pivot();
+        let [vx, vy] = back.apply([px - opposite[0], py - opposite[1]]);
+        let [dx, dy] = own.apply([vx * factor[0], vy * factor[1]]);
+        let place = self
+            .parent
+            .invert()?
+            .apply([opposite[0] + dx, opposite[1] + dy]);
+        Some((scales, place))
     }
 
     /// The `rotation` that turns the point `from` of the layer to lie
@@ -129,6 +154,81 @@ impl Placement {
         let by = (by + 180.0).rem_euclid(360.0) - 180.0;
         self.rotation + if flipped { -by } else { by }
     }
+}
+
+/// The four corners of the box of the layer at `path` on the canvas,
+/// top left first and round as its own space has them: turned with it
+/// when it is turned.
+///
+/// The engine gives a group whose children are placed each their own way,
+/// or that is clipped while turned, a box on the canvas that is not
+/// turned. A group's box is made here instead, in its own space: round
+/// its children's boxes, cut to its clip, then placed as the group is, so
+/// a turned group's box turns with it and its corners are its own.
+pub fn corners(engine: &Engine, path: &LayerPath) -> Option<[[f64; 2]; 4]> {
+    let bounds = engine.bounds(path)?;
+    let drawn = {
+        let [x, y, w, h] = bounds.rect;
+        [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(|p| bounds.transform.apply(p))
+    };
+    let show = engine.show()?;
+    let Some(layer) = crate::tree::layer(show, path) else {
+        return Some(drawn);
+    };
+    let LayerKind::Group { children, clip, .. } = &layer.kind else {
+        return Some(drawn);
+    };
+    let Some(placed) = placement(engine, path) else {
+        return Some(drawn);
+    };
+    let own = placed.parent.then(
+        Transform::translate(placed.x, placed.y)
+            .then(Transform::rotate(placed.rotation))
+            .then(Transform::scale(
+                placed.scale * placed.scale_x,
+                placed.scale * placed.scale_y,
+            )),
+    );
+    let back = own.invert()?;
+    // Round the children's corners, in the group's own space.
+    let mut points: Vec<[f64; 2]> = (0..children.len())
+        .filter_map(|i| {
+            let mut child = path.clone();
+            child.indices.push(i);
+            let b = engine.bounds(&child)?;
+            let [x, y, w, h] = b.rect;
+            Some(
+                [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+                    .map(|p| back.apply(b.transform.apply(p))),
+            )
+        })
+        .flatten()
+        .collect();
+    let cut = match clip {
+        Some(cuelight_core::Shape::Rect {
+            rect: [x, y, w, h], ..
+        }) => Some([*x, *y, x + w, y + h]),
+        Some(cuelight_core::Shape::Circle {
+            circle: [cx, cy, r],
+        }) => Some([cx - r, cy - r, cx + r, cy + r]),
+        _ => None,
+    };
+    if points.is_empty()
+        && let Some([x0, y0, x1, y1]) = cut
+    {
+        points = vec![[x0, y0], [x1, y1]];
+    }
+    let [mut x0, mut y0, mut x1, mut y1] = points.iter().fold(
+        [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+        |[a, b, c, d], p| [a.min(p[0]), b.min(p[1]), c.max(p[0]), d.max(p[1])],
+    );
+    if let Some([cx0, cy0, cx1, cy1]) = cut {
+        (x0, y0, x1, y1) = (x0.max(cx0), y0.max(cy0), x1.min(cx1), y1.min(cy1));
+    }
+    if !(x0 <= x1 && y0 <= y1) {
+        return Some(drawn);
+    }
+    Some([[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(|p| own.apply(p)))
 }
 
 /// The lines a moving box snaps to, on the canvas: x for vertical ones,
@@ -228,16 +328,52 @@ mod tests {
     }
 
     #[test]
-    fn a_corner_dragged_out_scales_round_the_pivot() {
+    fn a_corner_dragged_out_scales_with_the_corner_across_pinned() {
+        // A 20 x 10 rect from (10, 10) to (30, 20).
         let engine = engine(
             r##"{"name": "r", "type": "shape", "x": 10, "y": 10, "shape": {"rect": [0, 0, 20, 10]}, "fill": "#FFFFFF"}"##,
         );
         let placed = placement(&engine, &LayerPath::new(Root::Show, [0])).unwrap();
-        let scaled = placed.scaled([30.0, 20.0], [50.0, 25.0], false).unwrap();
-        assert!(close(scaled, [2.0, 1.5]), "{scaled:?}");
+        // The bottom right, with the top left pinned: the place stays.
+        let (scales, place) = placed
+            .scaled_about([10.0, 10.0], [30.0, 20.0], [50.0, 25.0], false)
+            .unwrap();
+        assert!(close(scales, [2.0, 1.5]), "{scales:?}");
+        assert!(close(place, [10.0, 10.0]), "{place:?}");
         // Kept in proportion: the drag's reach along the corner.
-        let kept = placed.scaled([30.0, 20.0], [50.0, 30.0], true).unwrap();
+        let (kept, _) = placed
+            .scaled_about([10.0, 10.0], [30.0, 20.0], [50.0, 30.0], true)
+            .unwrap();
         assert!(close(kept, [2.0, 2.0]), "{kept:?}");
+        // The top left, with the bottom right pinned: dragged up and left
+        // by the rect's size, it doubles and its place moves with it.
+        let (scales, place) = placed
+            .scaled_about([30.0, 20.0], [10.0, 10.0], [-10.0, 0.0], false)
+            .unwrap();
+        assert!(close(scales, [2.0, 2.0]), "{scales:?}");
+        assert!(close(place, [-10.0, 0.0]), "{place:?}");
+        // The top right, a pixel from level with the pivot: dragged up by
+        // a pixel, it grows by a pixel, not by a fifth.
+        let (scales, place) = placed
+            .scaled_about([10.0, 20.0], [30.0, 10.0], [30.0, 9.0], false)
+            .unwrap();
+        assert!(close(scales, [1.0, 1.1]), "{scales:?}");
+        assert!(close(place, [10.0, 9.0]), "{place:?}");
+    }
+
+    #[test]
+    fn a_turned_layer_scales_along_its_own_axes() {
+        // Turned a quarter: its width runs down the canvas from (50, 10).
+        let engine = engine(
+            r##"{"name": "r", "type": "shape", "x": 50, "y": 10, "rotation": 90, "shape": {"rect": [0, 0, 20, 10]}, "fill": "#FFFFFF"}"##,
+        );
+        let placed = placement(&engine, &LayerPath::new(Root::Show, [0])).unwrap();
+        // Its far corner is at (40, 30); the pivot's corner pinned.
+        let (scales, place) = placed
+            .scaled_about([50.0, 10.0], [40.0, 30.0], [40.0, 50.0], false)
+            .unwrap();
+        assert!(close(scales, [2.0, 1.0]), "{scales:?}");
+        assert!(close(place, [50.0, 10.0]), "{place:?}");
     }
 
     #[test]

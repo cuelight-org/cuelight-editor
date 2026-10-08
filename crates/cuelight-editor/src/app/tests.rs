@@ -2724,3 +2724,56 @@ fn a_layer_picked_in_the_tree_enters_its_scene() {
     let session = app.session.as_ref().unwrap();
     assert_eq!(session.active_scene().as_deref(), Some("page_8"));
 }
+
+#[test]
+fn every_corner_of_a_turned_clipped_group_follows_the_pointer() {
+    use cuelight_editor_core::placement;
+    // Turned an eighth round (100, 20), seen through a 40 x 30 clip that
+    // cuts its children, one of them turned its own way: the engine then
+    // has no one space to give the group's box in.
+    let (mut app, _dir) = open_layers(
+        r##"{"name": "g", "type": "group", "x": 100, "y": 20, "rotation": 45,
+      "clip": {"rect": [0, 0, 40, 30]},
+      "children": [
+        {"name": "r", "type": "shape", "shape": {"rect": [0, 0, 80, 60]}, "fill": "#FFFFFF"},
+        {"name": "t", "type": "shape", "x": 10, "y": 10, "rotation": 10, "shape": {"rect": [0, 0, 8, 4]}, "fill": "#000000"}
+      ]}"##,
+    );
+    let g = LayerPath::new(cuelight_core::Root::Show, [0]);
+    let _ = app.update(Message::Choose(g.clone()));
+    let box_of = |app: &App| {
+        let engine = lock(&app.session.as_ref().unwrap().engine);
+        placement::corners(&engine, &g).unwrap()
+    };
+    let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) < 0.5;
+    let start = box_of(&app);
+    // The box is the clip, turned with the group.
+    let expected = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]].map(|[x, y]| {
+        let (s, c) = std::f64::consts::FRAC_PI_4.sin_cos();
+        [100.0 + x * c - y * s, 20.0 + x * s + y * c]
+    });
+    for (got, want) in start.iter().zip(expected) {
+        assert!(near(*got, want), "{start:?}");
+    }
+    for corner in 0..4 {
+        let grabbed = start[corner];
+        let opposite = start[(corner + 2) % 4];
+        // Half as far again from the corner across.
+        let to = [
+            opposite[0] + 1.5 * (grabbed[0] - opposite[0]),
+            opposite[1] + 1.5 * (grabbed[1] - opposite[1]),
+        ];
+        drag(&mut app, Grip::Scale, grabbed, &[to], Held::default());
+        let after = box_of(&app);
+        assert!(
+            near(after[corner], to),
+            "corner {corner}: {after:?}, wanted {to:?}"
+        );
+        assert!(
+            near(after[(corner + 2) % 4], opposite),
+            "corner {corner}: {after:?}, across stays at {opposite:?}"
+        );
+        let _ = app.update(Message::Undo);
+        assert!(near(box_of(&app)[corner], grabbed));
+    }
+}

@@ -577,16 +577,8 @@ impl fmt::Debug for Frame {
 fn boxes(engine: &Engine, selection: &[LayerPath]) -> Vec<[[f64; 2]; 4]> {
     selection
         .iter()
-        .filter_map(|path| engine.bounds(path))
-        .map(|bounds| corners(&bounds))
+        .filter_map(|path| cuelight_editor_core::placement::corners(engine, path))
         .collect()
-}
-
-/// The four corners of a layer's box on the canvas, top left first and
-/// round as its own space has them, turned with it when it is turned.
-pub fn corners(bounds: &cuelight::LayerBounds) -> [[f64; 2]; 4] {
-    let [x, y, w, h] = bounds.rect;
-    [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(|p| bounds.transform.apply(p))
 }
 
 /// Draw the selection's boxes over the presented show, with the handles

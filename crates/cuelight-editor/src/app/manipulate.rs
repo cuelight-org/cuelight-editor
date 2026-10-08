@@ -41,6 +41,9 @@ pub(super) struct Grab {
     pub guides: [Option<f64>; 2],
     /// When it last wrote, and how long writing and reloading took.
     written: Option<(Instant, Duration)>,
+    /// For a scale, the corner of the box across from the one grabbed,
+    /// on the canvas: it stays where it is.
+    opposite: Option<[f64; 2]>,
 }
 
 /// The least time between two writes of a drag: what a screen of any
@@ -51,7 +54,7 @@ const WRITE_EVERY: Duration = Duration::from_millis(33);
 fn properties(grip: Grip) -> &'static [Property] {
     match grip {
         Grip::Move => &[Property::X, Property::Y],
-        Grip::Scale => &[Property::ScaleX, Property::ScaleY],
+        Grip::Scale => &[Property::ScaleX, Property::ScaleY, Property::X, Property::Y],
         Grip::Turn => &[Property::Rotation],
     }
 }
@@ -135,8 +138,8 @@ impl App {
                 Row::Root { .. } => None,
             })
             .filter(|path| beside(path) && !moving.iter().any(|m| related(m, path)))
-            .filter_map(|path| engine.bounds(path))
-            .filter_map(|bounds| placement::around(&crate::stage::corners(&bounds)))
+            .filter_map(|path| placement::corners(engine, path))
+            .filter_map(|corners| placement::around(&corners))
             .collect()
     }
 
@@ -159,8 +162,8 @@ impl App {
             (Grip::Move, Some(show)) => {
                 let corners: Vec<[f64; 2]> = picked
                     .iter()
-                    .filter_map(|path| engine.bounds(path))
-                    .flat_map(|bounds| crate::stage::corners(&bounds))
+                    .filter_map(|path| placement::corners(&engine, path))
+                    .flatten()
                     .collect();
                 let size = show.size.map(f64::from);
                 (
@@ -169,6 +172,19 @@ impl App {
                 )
             }
             _ => (None, Lines::default()),
+        };
+        // The corner nearest where the scale was grabbed is the one
+        // dragged; the one across from it stays.
+        let opposite = match (grip, picked.first()) {
+            (Grip::Scale, Some(path)) => placement::corners(&engine, path).and_then(|corners| {
+                let distance = |p: &[f64; 2]| (p[0] - at[0]).hypot(p[1] - at[1]);
+                let (nearest, _) = corners
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))?;
+                corners.get((nearest + 2) % 4).copied()
+            }),
+            _ => None,
         };
         drop(engine);
         if layers.is_empty() {
@@ -198,6 +214,7 @@ impl App {
             applied: Vec::new(),
             guides: [None, None],
             written: None,
+            opposite,
         };
         // Where it starts, unsnapped: what a drag that changed nothing
         // ends on.
@@ -456,10 +473,13 @@ impl Grab {
                     .layers
                     .first()
                     .and_then(|(path, placed)| {
-                        let [sx, sy] = placed.scaled(from, to, self.held.shift)?;
+                        let ([sx, sy], [x, y]) =
+                            placed.scaled_about(self.opposite?, from, to, self.held.shift)?;
                         Some(vec![
                             (path.clone(), Property::ScaleX, number(sx, 3)),
                             (path.clone(), Property::ScaleY, number(sy, 3)),
+                            (path.clone(), Property::X, number(x, 2)),
+                            (path.clone(), Property::Y, number(y, 2)),
                         ])
                     })
                     .unwrap_or_default();

@@ -21,6 +21,16 @@ impl App {
     pub(super) fn assets_panel<'a>(&'a self) -> Column<Element<'a, Message>> {
         const THUMB: f32 = 40.0;
         let mut panel = Column::new().spacing(4).padding(12);
+        // Files come in by this, or by dropping them on the window.
+        panel = panel.push(
+            container(
+                button(text("Import...").size(13))
+                    .on_press_maybe((!self.asking).then_some(Message::ImportAssets))
+                    .padding([2, 8]),
+            )
+            .padding(iced::Padding::ZERO.bottom(6))
+            .boxed(),
+        );
         if self.library.is_empty() {
             return panel.push(text("This show ships no assets.").size(14).boxed());
         }
@@ -227,6 +237,8 @@ impl App {
         };
         let heading = |label: &'a str| container(text(label).size(12)).padding([6, 0]);
 
+        panel = panel.push(heading("ASSET").boxed());
+        panel = panel.push(self.asset_actions(i));
         panel = panel.push(heading("FILE").boxed());
         match &asset.file {
             Some(file) => {

@@ -193,7 +193,7 @@ impl App {
 
     /// What a new layer is made from: the canvas, the show's first font
     /// style as written, its first sound and video, and the path typed.
-    fn making(&self) -> Making {
+    pub(super) fn making(&self) -> Making {
         let show = self.document.as_ref().map(|d| d.value());
         let font = show
             .as_ref()
@@ -253,7 +253,12 @@ impl App {
     /// part's goes after its artwork), or at the end of the show's
     /// layers while nothing is picked.
     fn insert_layer(&mut self, kind: Kind) -> Task<Message> {
-        let mut making = self.making();
+        let making = self.making();
+        self.insert_made(kind, making)
+    }
+
+    /// `insert_layer`, made as `making` says: of the asset it names.
+    pub(super) fn insert_made(&mut self, kind: Kind, mut making: Making) -> Task<Message> {
         // Text writes in a style: a show with fonts but no style gets one
         // for its first font, in the same step as the text.
         let style = (kind == Kind::Text && making.font.is_none())

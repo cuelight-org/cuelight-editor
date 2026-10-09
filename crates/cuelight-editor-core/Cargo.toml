@@ -18,7 +18,7 @@ log.workspace = true
 serde_json.workspace = true
 # The family name an outline font declares, for a host that draws the
 # font itself; the version the engine reads fonts with.
-skrifa = "0.44"
+skrifa = "0.47"
 # The clock's instant, which a browser has no std one of.
 web-time = "1"
 

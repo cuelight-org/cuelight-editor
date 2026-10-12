@@ -172,18 +172,37 @@ impl Opened {
         } else {
             cuelight_loader::unpack(bytes).map_err(|e| OpenError::Load(e.to_string()))?
         };
+        if !files.contains_key("show.json") {
+            return Err(OpenError::Load(format!("{name} holds no show.json")));
+        }
+        let origin = Origin::Bytes {
+            name: name.to_owned(),
+        };
+        Self::from_files(name, origin, files)
+    }
+
+    /// Open a show from its files held in memory, by their paths within
+    /// the show: what the bytes of a pack hold, or a show's files as its
+    /// edits left them, to register its assets again after one changed.
+    pub fn from_files(
+        source: &str,
+        origin: Origin,
+        files: BTreeMap<String, Vec<u8>>,
+    ) -> Result<Self, OpenError> {
         let document = files
             .get("show.json")
-            .ok_or_else(|| OpenError::Load(format!("{name} holds no show.json")))?;
+            .ok_or_else(|| OpenError::Load(format!("{source} holds no show.json")))?;
         check_format(&String::from_utf8_lossy(document))?;
         let mut engine = Engine::new();
         let loaded =
             cuelight_loader::load_from_memory_with(&mut engine, &files, &Options::lenient())
                 .map_err(|e| OpenError::Load(e.to_string()))?;
         let mut summary = summarize(&engine);
+        let videos = video_names(&files);
         summary.images = loaded.images.len();
         summary.vectors = loaded.vectors.len();
         summary.fonts = loaded.fonts.len();
+        summary.videos = videos.len();
         summary.driver = loaded.driver.as_ref().map(|d| (d.steps.len(), d.looping));
         let sounds = decode_sounds(&mut engine, &loaded.sounds, &mut summary);
         let names = Names {
@@ -191,7 +210,7 @@ impl Opened {
             vectors: loaded.vectors.clone(),
             fonts: loaded.fonts.clone(),
             sounds: loaded.sounds.iter().map(|s| s.name.clone()).collect(),
-            videos: Vec::new(),
+            videos,
         };
         let library = assets::library(&engine, &names, &files);
         summary
@@ -208,10 +227,8 @@ impl Opened {
         );
         let document = document_of(&files)?;
         Ok(Self {
-            source: name.to_owned(),
-            origin: Origin::Bytes {
-                name: name.to_owned(),
-            },
+            source: source.to_owned(),
+            origin,
             engine,
             summary,
             driver: loaded.driver,
@@ -222,6 +239,21 @@ impl Opened {
             document,
         })
     }
+}
+
+/// The clips among the files, by name: what is directly in
+/// `assets/videos/` with a video's extension.
+fn video_names(files: &BTreeMap<String, Vec<u8>>) -> Vec<String> {
+    files
+        .keys()
+        .filter_map(|path| {
+            let file = path.strip_prefix("assets/videos/")?;
+            let (stem, extension) = file.rsplit_once('.')?;
+            let video = cuelight_loader::VIDEO_EXTENSIONS
+                .contains(&extension.to_ascii_lowercase().as_str());
+            (video && !file.contains('/')).then(|| stem.to_owned())
+        })
+        .collect()
 }
 
 /// The show document among the files, as the editor edits it.

@@ -49,6 +49,90 @@ pub async fn pick_folder() -> Option<Picked> {
     Some(Picked::Path(picked.path().to_owned()))
 }
 
+/// A file picked or dropped to go into a show: its name and bytes.
+pub type File = (String, Vec<u8>);
+
+/// Ask for files to import into the show's assets. On the desktop a
+/// bitmap font's pages come along from beside it.
+pub async fn pick_assets() -> Option<Vec<File>> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Import assets")
+        .add_filter("pictures, artwork, fonts, sounds, videos", ASSET_EXTENSIONS)
+        .pick_files()
+        .await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let paths: Vec<_> = picked.iter().map(|p| p.path().to_owned()).collect();
+        Some(read_assets(&paths))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut files = Vec::new();
+        for file in picked {
+            files.push((file.file_name(), file.read().await));
+        }
+        Some(files)
+    }
+}
+
+/// Ask for a file to replace an asset with.
+pub async fn pick_replacement(asset: String) -> Option<File> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title(format!("Replace {asset}"))
+        .add_filter("pictures, artwork, fonts, sounds, videos", ASSET_EXTENSIONS)
+        .pick_file()
+        .await?;
+    let name = picked.file_name();
+    let bytes = picked.read().await;
+    Some((name, bytes))
+}
+
+/// The extensions of the files a show can use.
+const ASSET_EXTENSIONS: &[&str] = &[
+    "png", "svg", "ttf", "otf", "fnt", "wav", "flac", "ogg", "mp3", "mp4", "mkv", "webm", "avi",
+    "mov", "m4v",
+];
+
+/// Read files to import from disk, a bitmap font's pages with it from
+/// beside it. A file that does not read is left out, and logged.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_assets(paths: &[std::path::PathBuf]) -> Vec<File> {
+    let mut files: Vec<File> = Vec::new();
+    let read = |path: &std::path::Path, files: &mut Vec<File>| {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if files.iter().any(|(n, _)| *n == name) {
+            return None;
+        }
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                files.push((name, bytes));
+                files.last().map(|(_, bytes)| bytes.clone())
+            }
+            Err(error) => {
+                log::warn!("could not read {}: {error}", path.display());
+                None
+            }
+        }
+    };
+    for path in paths {
+        let Some(bytes) = read(path, &mut files) else {
+            continue;
+        };
+        let fnt = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("fnt"));
+        if let (true, Some(dir)) = (fnt, path.parent()) {
+            for page in cuelight_editor_core::manage::font_pages(&bytes) {
+                read(&dir.join(page), &mut files);
+            }
+        }
+    }
+    files
+}
+
 /// In a browser, the show the page was asked to open: `?show=<url>`, a
 /// packed show or a loose document, fetched as bytes. `None` when the
 /// page was opened plainly.

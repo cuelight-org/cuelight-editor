@@ -339,6 +339,15 @@ pub const SHOW_FIELDS: &[Field] = &[
     show_field("pointer y", &["input", "pointer", "y"], Input::Text),
     show_field("pointer over", &["input", "pointer", "over"], Input::Text),
     show_field("pointer under", &["input", "pointer", "under"], Input::Text),
+    // What the show hears: the variable set to the loudness, the trigger
+    // a beat fires, and the loudness on a meter's fixed scale.
+    show_field("audio level", &["input", "audio", "level"], Input::Text),
+    show_field("audio onset", &["input", "audio", "onset"], Input::Text),
+    show_field(
+        "audio absolute level",
+        &["input", "audio", "absolute", "level"],
+        Input::Text,
+    ),
 ];
 
 const fn show_field(label: &'static str, path: &'static [&'static str], input: Input) -> Field {
@@ -425,6 +434,7 @@ pub const SHOW_ELSEWHERE: &[(&str, &str)] = &[
     ("scenes", "the scenes in the tree"),
     ("variables", "the show's lists"),
     ("keys", "the show's lists"),
+    ("bands", "its own editor, not planned yet"),
 ];
 
 pub const ELSEWHERE: &[(&str, &str)] = &[

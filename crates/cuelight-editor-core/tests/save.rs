@@ -232,3 +232,34 @@ fn a_show_that_came_as_bytes_is_handed_back_as_a_download() {
     let (name, bytes) = save::download(&opened.origin, &opened.files, &opened.document).unwrap();
     assert_eq!((name.as_str(), bytes), ("typed.json", loose));
 }
+
+#[test]
+fn a_rename_saves_the_driver_with_the_show_and_opens_again() {
+    use cuelight_editor_core::renames::{self, DRIVER, Kind};
+    let dir = tempfile::tempdir().unwrap();
+    let show = dir.path().join("mini");
+    copy_dir(&fixture("mini"), &show);
+    let mut opened = Opened::from_path(&show).unwrap();
+    let driver = renames::driver_text(&opened.document, &opened.files).unwrap();
+    let driver_value: Value = serde_json::from_str(&driver).unwrap();
+    let plan = renames::plan(
+        Kind::Variable,
+        "lit",
+        "on",
+        &opened.document.value(),
+        Some(&driver_value),
+    )
+    .unwrap();
+    renames::apply(&plan, &mut opened.document, Some(&driver)).unwrap();
+    save::save(&opened.origin, &mut opened.files, &mut opened.document).unwrap();
+    let written = std::fs::read_to_string(show.join(DRIVER)).unwrap();
+    assert_eq!(written, driver.replace("\"lit\"", "\"on\""), "as written");
+    assert_eq!(opened.files[DRIVER], written.as_bytes(), "held as on disk");
+    let again = Opened::from_path(&show).unwrap();
+    assert!(
+        again.summary.problems.is_empty(),
+        "{:?}",
+        again.summary.problems
+    );
+    assert_eq!(again.driver.unwrap().steps.len(), 5);
+}

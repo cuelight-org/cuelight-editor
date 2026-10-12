@@ -206,6 +206,21 @@ pub fn library(engine: &Engine, names: &Names, files: &BTreeMap<String, Vec<u8>>
     out
 }
 
+/// Bring each asset's uses up to date with `show`, as edited since the
+/// library was made.
+pub fn refresh_uses(library: &mut [Asset], show: &Show) {
+    let mut uses = uses_in(show);
+    for asset in library {
+        let what = match asset.kind {
+            Kind::Image | Kind::Vector => Ref::Artwork(asset.name.clone()),
+            Kind::Font => Ref::Font(asset.name.clone()),
+            Kind::Sound => Ref::Sound(asset.name.clone()),
+            Kind::Video => Ref::Video(asset.name.clone()),
+        };
+        asset.uses = uses.remove(&what).unwrap_or_default();
+    }
+}
+
 /// The file under `dir` whose stem is `name`, whatever its extension.
 fn file_for(files: &BTreeMap<String, Vec<u8>>, dir: &str, name: &str) -> Option<String> {
     let prefix = format!("{dir}/{name}.");
